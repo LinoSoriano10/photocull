@@ -259,7 +259,7 @@ function updateToolbar() {
   selectionCount.textContent = picked.size === 0 ? "" : `${picked.size} selected`;
 }
 
-function fileCard(file, isKeep, groupType, ordinal) {
+function fileCard(file, group, index) {
   const node = document.getElementById("file-template").content.cloneNode(true);
   const fig = node.querySelector("figure");
   const thumbWrap = node.querySelector(".thumb-wrap");
@@ -270,17 +270,24 @@ function fileCard(file, isKeep, groupType, ordinal) {
   const name = node.querySelector(".name");
   const meta = node.querySelector(".meta");
 
-  ord.textContent = `#${ordinal}`;
+  const isKeep = index === group.keepIndex;
+  const groupType = group.type;
+
+  ord.textContent = `#${index + 1}`;
   img.src = `/api/thumb?path=${encodeURIComponent(file.path)}`;
   img.alt = file.relPath;
   name.textContent = file.relPath;
   name.title = file.path;
   const dims = file.decoded ? `${file.width}×${file.height}` : "unreadable";
   meta.textContent = `${humanBytes(file.size)} · ${dims} · ${file.modTime}`;
+  thumbWrap.title = isKeep
+    ? "Click to compare against the other copies"
+    : "Click to compare against the copy being kept";
 
-  // Clicking the photo opens the full-size comparison view; it never toggles
-  // the delete checkbox, so looking closely can't accidentally select a file.
-  const open = () => openLightbox(file);
+  // Clicking the photo opens the comparison view against the copy being kept;
+  // it never toggles the delete checkbox, so looking closely can't accidentally
+  // select a file.
+  const open = () => openViewer(group.files, index, group.keepIndex);
   thumbWrap.addEventListener("click", open);
   thumbWrap.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
@@ -348,37 +355,365 @@ function render(report) {
 
     hint.textContent = group.type === "exact"
       ? "These files are byte-for-byte identical. The extra copies are pre-ticked; untick any you want to keep."
-      : "These photos only look alike. Compare them (click to enlarge) and tick the ones to remove. None are pre-selected.";
+      : "These photos only look alike. Click one to compare it against the copy being kept, then tick the ones to remove. None are pre-selected.";
 
     group.files.forEach((file, i) => {
-      filesEl.appendChild(fileCard(file, i === group.keepIndex, group.type, i + 1));
+      filesEl.appendChild(fileCard(file, group, i));
     });
     groupsEl.appendChild(node);
   });
   updateToolbar();
 }
 
-// ---- Lightbox ----
+// ---- Comparison viewer ----
+//
+// Two photos a perceptual hash called "similar" are, by definition, hard to
+// tell apart. Looking at one and then the other does not work: the eye cannot
+// carry that much detail across a glance. So the pair is offered four ways, and
+// each earns its place by catching something the others miss — side by side for
+// framing and colour, wipe for crops and watermarks, blink for the subtle
+// change you cannot name, and the difference map for where to look at all.
 
-const lightbox = document.getElementById("lightbox");
-const lightboxImg = document.getElementById("lightbox-img");
-const lightboxCaption = document.getElementById("lightbox-caption");
+const viewer = document.getElementById("viewer");
+const viewerModes = document.getElementById("viewer-modes");
+const viewerVerdict = document.getElementById("viewer-verdict");
+const viewerNote = document.getElementById("viewer-note");
+const viewerFoot = document.getElementById("viewer-foot");
+const viewerPos = document.getElementById("viewer-pos");
+const stackClip = document.getElementById("stack-clip");
+const stackFrame = document.getElementById("stack-frame");
+const wipeHandle = document.getElementById("wipe-handle");
 
-function openLightbox(file) {
+const panes = {
+  side: document.getElementById("stage-side"),
+  stack: document.getElementById("stage-stack"),
+  heat: document.getElementById("stage-heat"),
+  single: document.getElementById("stage-single"),
+};
+
+// How long each photo stays up in blink mode. Fast enough that the eye reads a
+// change as motion, slow enough to see what the photo actually is.
+const BLINK_MS = 600;
+const MAX_ZOOM = 8;
+
+let vs = null; // viewer state; null when the viewer is closed
+
+function previewURL(file) {
+  return `/api/preview?path=${encodeURIComponent(file.path)}`;
+}
+
+function fileCaption(file) {
   const dims = file.decoded ? `${file.width}×${file.height}` : "unreadable";
-  lightboxImg.src = `/api/preview?path=${encodeURIComponent(file.path)}`;
-  lightboxCaption.textContent = `${file.relPath} — ${humanBytes(file.size)} · ${dims} · ${file.modTime}`;
-  lightbox.classList.remove("hidden");
+  return `${file.relPath} — ${humanBytes(file.size)} · ${dims} · ${file.modTime}`;
 }
 
-function closeLightbox() {
-  lightbox.classList.add("hidden");
-  lightboxImg.src = "";
+function modeButton(view) {
+  return viewerModes.querySelector(`[data-view="${view}"]`);
 }
 
-lightbox.addEventListener("click", closeLightbox);
+// openSingle shows one photo on its own — the add-to-library gallery has
+// nothing to compare against.
+function openSingle(file) {
+  vs = { view: "single", others: [], at: 0, zoom: identityZoom() };
+  document.getElementById("single-img").src = previewURL(file);
+  document.getElementById("single-cap").textContent = fileCaption(file);
+  viewerModes.classList.add("hidden");
+  viewerFoot.classList.add("hidden");
+  viewerVerdict.textContent = "";
+  viewerNote.classList.add("hidden");
+  setPane("single");
+  applyZoom();
+  viewer.classList.remove("hidden");
+}
+
+// openViewer compares one file in a group against the copy being kept, which is
+// the only comparison that matters: every decision in the review view is
+// "should this go, given that one stays?".
+function openViewer(files, index, keepIndex) {
+  const others = files.map((_, i) => i).filter((i) => i !== keepIndex);
+  if (!others.length || keepIndex < 0 || keepIndex >= files.length) {
+    openSingle(files[index]);
+    return;
+  }
+
+  // Clicking the keeper itself has no pair, so start at the first duplicate.
+  const wanted = index === keepIndex ? others[0] : index;
+  vs = {
+    files,
+    keepIndex,
+    others,
+    at: Math.max(0, others.indexOf(wanted)),
+    view: "side",
+    wipe: 0.5,
+    zoom: identityZoom(),
+    blink: null,
+  };
+
+  viewerModes.classList.remove("hidden");
+  viewerFoot.classList.toggle("hidden", others.length < 2);
+  setView("side");
+  loadPair();
+  viewer.classList.remove("hidden");
+}
+
+async function loadPair() {
+  const a = vs.files[vs.keepIndex];
+  const b = vs.files[vs.others[vs.at]];
+  const urlA = previewURL(a);
+  const urlB = previewURL(b);
+
+  document.getElementById("side-a").src = urlA;
+  document.getElementById("side-b").src = urlB;
+  document.getElementById("stack-a").src = urlA;
+  document.getElementById("stack-b").src = urlB;
+  document.getElementById("side-a-cap").textContent = `KEEP · ${fileCaption(a)}`;
+  document.getElementById("side-b-cap").textContent = fileCaption(b);
+  document.getElementById("stack-cap").textContent =
+    `Keeping "${a.relPath}" underneath · "${b.relPath}" on top`;
+  document.getElementById("heat-img").src =
+    `/api/imagediff?a=${encodeURIComponent(a.path)}&b=${encodeURIComponent(b.path)}`;
+  document.getElementById("heat-cap").textContent =
+    `Red marks where "${b.relPath}" differs from the copy being kept.`;
+  viewerPos.textContent = `Copy ${vs.at + 1} of ${vs.others.length}`;
+
+  resetZoom();
+  viewerVerdict.textContent = "comparing…";
+  viewerNote.classList.add("hidden");
+
+  try {
+    const res = await fetch(`/api/compare?a=${encodeURIComponent(a.path)}&b=${encodeURIComponent(b.path)}`);
+    if (!res.ok) throw new Error(String(res.status));
+    renderVerdict(await res.json());
+  } catch {
+    // The photos are still there to look at; only the summary is missing.
+    viewerVerdict.textContent = "";
+  }
+}
+
+function renderVerdict(cmp) {
+  const heatBtn = modeButton("heat");
+
+  if (cmp.note) {
+    viewerVerdict.textContent = "";
+    viewerNote.textContent = cmp.note;
+    viewerNote.classList.remove("hidden");
+    // Without a pixel comparison there is no map to draw.
+    heatBtn.disabled = true;
+    if (vs.view === "heat") setView("side");
+    return;
+  }
+
+  heatBtn.disabled = false;
+  if (!cmp.image) {
+    viewerVerdict.textContent = "";
+    return;
+  }
+
+  const pct = cmp.image.ratio * 100;
+  let text;
+  if (pct === 0) text = "Every pixel matches.";
+  else if (pct < 0.05) text = "Differ in under 0.05% of pixels.";
+  else text = `Differ in ${pct < 1 ? pct.toFixed(2) : pct.toFixed(1)}% of pixels.`;
+
+  if (cmp.image.box && cmp.image.width && cmp.image.height) {
+    text += ` ${whereText(cmp.image.box, cmp.image.width, cmp.image.height)}`;
+  }
+  viewerVerdict.textContent = text;
+}
+
+// whereText turns the bounding box into words. "0.4% of pixels" is a puzzle;
+// "0.4%, bottom right" is a decision — it tells you where to point the zoom.
+function whereText(box, w, h) {
+  if ((box.w * box.h) / (w * h) > 0.6) return "Spread across the whole frame.";
+
+  const cx = (box.x + box.w / 2) / w;
+  const cy = (box.y + box.h / 2) / h;
+  const vert = cy < 0.34 ? "top" : cy > 0.66 ? "bottom" : "middle";
+  const horiz = cx < 0.34 ? "left" : cx > 0.66 ? "right" : "centre";
+  if (vert === "middle" && horiz === "centre") return "Concentrated in the centre.";
+  if (vert === "middle") return `Concentrated on the ${horiz}.`;
+  if (horiz === "centre") return `Concentrated at the ${vert}.`;
+  return `Concentrated ${vert} ${horiz}.`;
+}
+
+function setPane(view) {
+  const wanted = view === "wipe" || view === "blink" ? "stack" : view;
+  for (const [name, el] of Object.entries(panes)) {
+    el.classList.toggle("hidden", name !== wanted);
+  }
+  for (const btn of viewerModes.querySelectorAll(".vmode")) {
+    btn.classList.toggle("active", btn.dataset.view === view);
+  }
+}
+
+function setView(view) {
+  if (!vs) return;
+  stopBlink();
+  vs.view = view;
+  setPane(view);
+
+  wipeHandle.classList.toggle("hidden", view !== "wipe");
+  if (view === "wipe") applyWipe();
+  else stackClip.style.clipPath = "none";
+  if (view === "blink") startBlink();
+
+  applyZoom();
+}
+
+function applyWipe() {
+  stackClip.style.clipPath = `inset(0 ${((1 - vs.wipe) * 100).toFixed(2)}% 0 0)`;
+  wipeHandle.style.left = `${(vs.wipe * 100).toFixed(2)}%`;
+}
+
+function startBlink() {
+  let showing = true;
+  vs.blink = setInterval(() => {
+    showing = !showing;
+    stackClip.style.opacity = showing ? "1" : "0";
+  }, BLINK_MS);
+}
+
+function stopBlink() {
+  if (vs && vs.blink) {
+    clearInterval(vs.blink);
+    vs.blink = null;
+  }
+  stackClip.style.opacity = "1";
+}
+
+// ---- Zoom and pan, shared by every pane ----
+//
+// One transform drives every visible image. That is the whole point: two photos
+// panned independently are two photos you cannot compare.
+
+function identityZoom() {
+  return { scale: 1, x: 0, y: 0 };
+}
+
+function applyZoom() {
+  if (!vs) return;
+  const { scale, x, y } = vs.zoom;
+  const transform = `translate(${x}px, ${y}px) scale(${scale})`;
+  for (const img of viewer.querySelectorAll(".zoomable")) {
+    img.style.transform = transform;
+  }
+}
+
+function resetZoom() {
+  if (!vs) return;
+  vs.zoom = identityZoom();
+  applyZoom();
+}
+
+viewer.addEventListener("wheel", (e) => {
+  if (!vs || !e.target.closest(".frame")) return;
+  e.preventDefault();
+
+  const rect = e.target.closest(".frame").getBoundingClientRect();
+  // Zoom about the cursor, so whatever detail is under it stays under it.
+  const cx = e.clientX - rect.left - rect.width / 2;
+  const cy = e.clientY - rect.top - rect.height / 2;
+
+  const before = vs.zoom.scale;
+  const after = Math.min(MAX_ZOOM, Math.max(1, before * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+  const k = after / before;
+
+  vs.zoom.scale = after;
+  vs.zoom.x = (vs.zoom.x - cx) * k + cx;
+  vs.zoom.y = (vs.zoom.y - cy) * k + cy;
+  if (after === 1) { vs.zoom.x = 0; vs.zoom.y = 0; }
+  applyZoom();
+}, { passive: false });
+
+// Dragging pans, except in wipe mode where it moves the divider instead —
+// a comparison slider you have to grab by a 6px handle is a bad slider.
+let drag = null;
+
+viewer.addEventListener("pointerdown", (e) => {
+  if (!vs) return;
+  const frame = e.target.closest(".frame");
+  if (!frame) return;
+
+  if (vs.view === "wipe") {
+    e.preventDefault();
+    drag = { kind: "wipe" };
+    vs.wipe = wipeFromEvent(e);
+    applyWipe();
+  } else if (vs.zoom.scale > 1) {
+    e.preventDefault();
+    drag = { kind: "pan", x: e.clientX, y: e.clientY };
+  }
+  if (drag) frame.setPointerCapture(e.pointerId);
+});
+
+viewer.addEventListener("pointermove", (e) => {
+  if (!drag || !vs) return;
+  if (drag.kind === "wipe") {
+    vs.wipe = wipeFromEvent(e);
+    applyWipe();
+    return;
+  }
+  vs.zoom.x += e.clientX - drag.x;
+  vs.zoom.y += e.clientY - drag.y;
+  drag.x = e.clientX;
+  drag.y = e.clientY;
+  applyZoom();
+});
+
+viewer.addEventListener("pointerup", () => { drag = null; });
+viewer.addEventListener("pointercancel", () => { drag = null; });
+
+function wipeFromEvent(e) {
+  const rect = stackFrame.getBoundingClientRect();
+  return Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+}
+
+// ---- Viewer navigation ----
+
+function stepCopy(delta) {
+  if (!vs || vs.others.length < 2) return;
+  vs.at = (vs.at + delta + vs.others.length) % vs.others.length;
+  loadPair();
+}
+
+function closeViewer() {
+  stopBlink();
+  viewer.classList.add("hidden");
+  for (const img of viewer.querySelectorAll("img")) img.src = "";
+  vs = null;
+  drag = null;
+}
+
+viewerModes.addEventListener("click", (e) => {
+  const btn = e.target.closest(".vmode");
+  if (btn && !btn.disabled) setView(btn.dataset.view);
+});
+document.getElementById("viewer-close").addEventListener("click", closeViewer);
+document.getElementById("viewer-prev").addEventListener("click", () => stepCopy(-1));
+document.getElementById("viewer-next").addEventListener("click", () => stepCopy(1));
+
+// Clicking the backdrop closes, but clicking the photos must not: the viewer is
+// something you work inside now, not a picture you dismiss.
+viewer.addEventListener("click", (e) => {
+  if (e.target === viewer) closeViewer();
+});
+
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !lightbox.classList.contains("hidden")) closeLightbox();
+  if (!vs) return;
+  if (e.key === "Escape") { closeViewer(); return; }
+  if (vs.view === "single") return;
+
+  switch (e.key) {
+    case "ArrowLeft": stepCopy(-1); break;
+    case "ArrowRight": stepCopy(1); break;
+    case "1": setView("side"); break;
+    case "2": setView("wipe"); break;
+    case "3": setView("blink"); break;
+    case "4": if (!modeButton("heat").disabled) setView("heat"); break;
+    case "0": resetZoom(); break;
+    default: return;
+  }
+  e.preventDefault();
 });
 
 deleteBtn.addEventListener("click", async () => {
@@ -499,7 +834,9 @@ function mergeCard(file) {
   const dims = file.decoded ? `${file.width}×${file.height}` : "unreadable";
   node.querySelector(".meta").textContent = `${humanBytes(file.size)} · ${dims} · ${file.modTime}`;
 
-  const open = () => openLightbox(file);
+  // Nothing to compare against here: these photos are the ones the library does
+  // not have, so there is no counterpart to put beside them.
+  const open = () => openSingle(file);
   thumbWrap.addEventListener("click", open);
   thumbWrap.addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }

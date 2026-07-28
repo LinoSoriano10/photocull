@@ -100,10 +100,11 @@
         <span id="selection-count" class="muted"></span>
       </div>
       <p class="hint muted">
-        Each group below is one set of photos that look alike. Compare them —
-        click any photo to see it full size — then tick the ones to remove.
-        Nothing is deleted until you press the button above, and even then it
-        only goes to the recycle bin.
+        Each group below is one set of photos that look alike. Click any photo
+        to compare it against the copy being kept — side by side, with a wipe,
+        blinking between the two, or with the differences highlighted — then
+        tick the ones to remove. Nothing is deleted until you press the button
+        above, and even then it only goes to the recycle bin.
       </p>
     </header>
     <main id="groups"></main>
@@ -140,11 +141,67 @@
     </div>
   </section>
 
-  <!-- Full-size comparison overlay -->
-  <div id="lightbox" class="lightbox hidden">
-    <img id="lightbox-img" alt="">
-    <p id="lightbox-caption"></p>
-    <span class="lightbox-close">Click anywhere to close · Esc</span>
+  <!--
+    Comparison overlay. Deciding between two near-identical photos by looking at
+    one and then the other does not work — the eye cannot hold that much detail
+    between glances. So the same pair is offered four ways, because each one
+    catches a different kind of difference.
+  -->
+  <div id="viewer" class="viewer hidden">
+    <div class="viewer-bar">
+      <div class="viewer-modes" id="viewer-modes">
+        <button type="button" class="vmode" data-view="side" title="Both photos at once">Side by side</button>
+        <button type="button" class="vmode" data-view="wipe" title="Drag the divider across">Wipe</button>
+        <button type="button" class="vmode" data-view="blink" title="Alternate between them in place">Blink</button>
+        <button type="button" class="vmode" data-view="heat" title="Highlight what changed">Differences</button>
+      </div>
+      <span id="viewer-verdict" class="verdict"></span>
+      <button type="button" id="viewer-close" class="secondary">Close · Esc</button>
+    </div>
+
+    <div class="stage">
+      <!-- Side by side: two panes that zoom and pan together. -->
+      <div id="stage-side" class="stage-pane side">
+        <figure>
+          <div class="frame"><img id="side-a" class="zoomable" alt=""></div>
+          <figcaption id="side-a-cap"></figcaption>
+        </figure>
+        <figure>
+          <div class="frame"><img id="side-b" class="zoomable" alt=""></div>
+          <figcaption id="side-b-cap"></figcaption>
+        </figure>
+      </div>
+
+      <!-- Wipe and blink stack the two photos in exactly the same place. -->
+      <div id="stage-stack" class="stage-pane stack hidden">
+        <div class="frame stack-frame" id="stack-frame">
+          <img id="stack-a" class="zoomable" alt="">
+          <div class="clip" id="stack-clip"><img id="stack-b" class="zoomable" alt=""></div>
+          <div class="wipe-handle" id="wipe-handle"></div>
+        </div>
+        <p id="stack-cap" class="muted"></p>
+      </div>
+
+      <!-- The difference map, computed on the server. -->
+      <div id="stage-heat" class="stage-pane heat hidden">
+        <div class="frame"><img id="heat-img" class="zoomable" alt=""></div>
+        <p id="heat-cap" class="muted"></p>
+      </div>
+
+      <!-- One photo on its own, for the add-to-library gallery. -->
+      <div id="stage-single" class="stage-pane single hidden">
+        <div class="frame"><img id="single-img" class="zoomable" alt=""></div>
+        <p id="single-cap" class="muted"></p>
+      </div>
+
+      <p id="viewer-note" class="viewer-note hidden"></p>
+    </div>
+
+    <div class="viewer-foot" id="viewer-foot">
+      <button type="button" id="viewer-prev" class="secondary">← Previous copy</button>
+      <span id="viewer-pos" class="muted"></span>
+      <button type="button" id="viewer-next" class="secondary">Next copy →</button>
+    </div>
   </div>
 
   <template id="group-template">

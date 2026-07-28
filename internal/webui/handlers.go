@@ -273,11 +273,37 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 	s.serveImage(w, raw, imageutil.PreviewSize)
 }
 
+// lookup resolves raw to an absolute path and reports whether set contains it.
+// Callers must hold s.mu.
+func lookup(set map[string]bool, raw string) (string, bool) {
+	abs, err := filepath.Abs(raw)
+	if err != nil || !set[abs] {
+		return "", false
+	}
+	return abs, true
+}
+
+// resolveAllowed turns a request's raw path into an absolute one and reports
+// whether the scan ever touched it.
+//
+// Every endpoint that opens a file off the disk goes through here. Membership
+// in s.allowed *is* photocull's entire file-access security model — there is no
+// path-prefix check, which is also what makes a "../.." escape pointless — so
+// it lives in one function precisely so it can be read, tested and pointed at.
+//
+// It takes the lock itself: the browser fires image and comparison requests
+// concurrently, and a delete running at the same time rewrites these sets.
+func (s *Server) resolveAllowed(raw string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return lookup(s.allowed, raw)
+}
+
 // serveImage renders one scanned file at the requested size, refusing any path
 // that was not part of the scan.
 func (s *Server) serveImage(w http.ResponseWriter, raw string, size int) {
-	abs, err := filepath.Abs(raw)
-	if err != nil || !s.allowed[abs] {
+	abs, ok := s.resolveAllowed(raw)
+	if !ok {
 		// Do not reveal whether the file exists; just refuse.
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -290,6 +316,124 @@ func (s *Server) serveImage(w http.ResponseWriter, raw string, size int) {
 	}
 
 	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write(data)
+}
+
+// comparison answers "is there anything here worth looking at?" before the page
+// fetches a single pixel.
+//
+// It deliberately does not echo the two files' details back: the page already
+// holds them from /api/report, and sending them twice would be one more place
+// for the two views to disagree about what a file is.
+type comparison struct {
+	// Kind selects which panel the page renders. Only images compare this way
+	// today; documents will answer the same endpoint with their own shape.
+	Kind  string     `json:"kind"`
+	Image *imageDiff `json:"image,omitempty"`
+
+	// Note explains, in the user's words, why there is no comparison to show.
+	Note string `json:"note,omitempty"`
+}
+
+type imageDiff struct {
+	// Ratio is the fraction of pixels that differ, 0 to 1.
+	Ratio float64 `json:"ratio"`
+
+	// Width and Height are the grid both photos were scaled onto, so the page
+	// can position the box over the heatmap.
+	Width  int `json:"width"`
+	Height int `json:"height"`
+
+	// Box encloses the change. Absent when nothing differs.
+	Box *diffBox `json:"box,omitempty"`
+}
+
+type diffBox struct {
+	X int `json:"x"`
+	Y int `json:"y"`
+	W int `json:"w"`
+	H int `json:"h"`
+}
+
+// resolvePair validates both halves of a comparison request.
+//
+// Both paths are checked. Validating only the one that happens to be read first
+// would leave the other as an open door to any file on the disk, which is the
+// easy mistake to make here and the reason this is not written inline twice.
+func (s *Server) resolvePair(r *http.Request) (a, b string, ok bool) {
+	a, okA := s.resolveAllowed(r.URL.Query().Get("a"))
+	b, okB := s.resolveAllowed(r.URL.Query().Get("b"))
+	return a, b, okA && okB
+}
+
+// handleCompare reports how two scanned photos differ.
+func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
+	a, b, ok := s.resolvePair(r)
+	if !ok {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	diff, err := imageutil.Compare(a, b)
+	if err != nil {
+		// A photo photocull could not decode is still a real duplicate
+		// candidate — it was grouped by content hash — so this is a note, not
+		// an error. The page falls back to comparing file details.
+		writeJSON(w, http.StatusOK, comparison{
+			Kind: "image",
+			Note: "One of these files could not be decoded as an image, so they can only be compared by name, size and date.",
+		})
+		return
+	}
+
+	if diff.AspectMismatch {
+		writeJSON(w, http.StatusOK, comparison{
+			Kind: "image",
+			Note: "These photos are framed differently — one of them is cropped — so they cannot be laid over each other. Compare them side by side instead.",
+		})
+		return
+	}
+
+	out := &imageDiff{Ratio: diff.Ratio, Width: diff.Width, Height: diff.Height}
+	if !diff.Box.Empty() {
+		out.Box = &diffBox{
+			X: diff.Box.Min.X,
+			Y: diff.Box.Min.Y,
+			W: diff.Box.Dx(),
+			H: diff.Box.Dy(),
+		}
+	}
+	writeJSON(w, http.StatusOK, comparison{Kind: "image", Image: out})
+}
+
+// handleImageDiff renders the difference map between two scanned photos.
+//
+// It is a separate endpoint from /api/compare, and only the heatmap tab asks
+// for it, so the second decode-and-scale of both photos is paid for only when
+// somebody actually looks.
+func (s *Server) handleImageDiff(w http.ResponseWriter, r *http.Request) {
+	a, b, ok := s.resolvePair(r)
+	if !ok {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	diff, err := imageutil.Compare(a, b)
+	if err != nil {
+		http.Error(w, "cannot compare these images", http.StatusUnprocessableEntity)
+		return
+	}
+
+	data, err := diff.HeatmapPNG()
+	if err != nil {
+		http.Error(w, "no difference map for these images", http.StatusUnprocessableEntity)
+		return
+	}
+
+	// PNG, not JPEG: the map is flat colour over large areas, which JPEG would
+	// smear into a halo around exactly the edges the user is trying to judge.
+	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Write(data)
 }
@@ -328,8 +472,8 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	var permitted []string
 	var failed []string
 	for _, p := range req.Paths {
-		abs, err := filepath.Abs(p)
-		if err != nil || !s.deletable[abs] {
+		abs, ok := lookup(s.deletable, p)
+		if !ok {
 			failed = append(failed, p)
 			continue
 		}

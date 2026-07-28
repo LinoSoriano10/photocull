@@ -264,29 +264,121 @@ button.secondary { background: var(--panel-2); color: var(--text); border: 1px s
 /* ---- Review header extras ---- */
 .review-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 
-/* ---- Lightbox (full-size comparison) ---- */
-.lightbox {
+/* ---- Comparison viewer ---- */
+.viewer {
   position: fixed;
   inset: 0;
   z-index: 100;
   display: flex;
   flex-direction: column;
+  gap: 10px;
+  padding: 14px 18px 18px;
+  /* Opaque, and dark in both themes: a translucent overlay lets the sticky
+     header show through the toolbar, and photographs are judged against black
+     anyway. */
+  background: #08090c;
+}
+
+.viewer-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.viewer-modes { display: flex; gap: 6px; }
+.vmode {
+  padding: 6px 12px;
+  font-size: 13px;
+  color: #cfd4dc;
+  background: #22262f;
+  border: 1px solid #333944;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.vmode:hover:not(:disabled) { background: #2b3039; }
+.vmode.active { color: #fff; background: var(--accent); border-color: var(--accent); }
+.vmode:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.verdict { flex: 1; color: #eee; font-size: 14px; }
+#viewer-close { margin-left: auto; }
+
+.stage { position: relative; flex: 1; min-height: 0; display: flex; }
+.stage-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.stage-pane.side { flex-direction: row; gap: 14px; }
+.stage-pane.side figure { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; margin: 0; }
+.stage-pane.side figcaption,
+.stage-pane .muted { color: #b9bfc9; font-size: 13px; text-align: center; word-break: break-all; }
+
+/* The frame is the fixed window every photo is transformed inside, so both
+   panes stay the same size no matter how far the images are zoomed. */
+.frame {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  border-radius: 6px;
+  background: #000;
+}
+.frame img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  transform-origin: center center;
+  /* No transition: a zoom that animates lags behind the wheel and makes fine
+     comparison feel imprecise. */
+}
+.stage-pane.side .frame { cursor: grab; }
+.stage-pane.side .frame:active { cursor: grabbing; }
+
+/* Wipe and blink stack both photos in exactly the same place. */
+.stack-frame { cursor: ew-resize; }
+.stack-frame .clip { position: absolute; inset: 0; }
+.wipe-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+.wipe-handle::after {
+  content: "↔";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 28px;
+  height: 28px;
+  display: flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  padding: 24px;
-  background: rgba(0, 0, 0, 0.9);
-  cursor: zoom-out;
+  font-size: 14px;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 50%;
 }
-.lightbox img {
-  max-width: 95vw;
-  max-height: 82vh;
-  object-fit: contain;
+
+.viewer-note {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  max-width: 640px;
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #f0d9a0;
+  background: rgba(60, 48, 20, 0.92);
+  border: 1px solid #6b5620;
   border-radius: 6px;
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+  text-align: center;
 }
-#lightbox-caption { color: #eee; font-size: 14px; margin: 0; text-align: center; word-break: break-all; max-width: 90vw; }
-.lightbox-close { color: #888; font-size: 12px; }
+
+.viewer-foot { display: flex; align-items: center; justify-content: center; gap: 14px; }
+#viewer-pos { color: #b9bfc9; font-size: 13px; }
+
+@media (max-width: 760px) {
+  .stage-pane.side { flex-direction: column; }
+}
 
 @media (prefers-color-scheme: light) {
   :root {

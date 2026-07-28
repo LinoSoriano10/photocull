@@ -83,7 +83,7 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.scanMu.Lock()
-	if s.job != nil && !s.job.done {
+	if s.job != nil && !s.job.finished() {
 		s.scanMu.Unlock()
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "a scan is already running"})
 		return
@@ -117,18 +117,15 @@ func (s *Server) runScanJob(ctx context.Context, job *scanJob, req scanRequest) 
 		Progress:  job.progress,
 	})
 
-	s.scanMu.Lock()
-	job.done = true
-	if err != nil {
-		job.err = err.Error()
-	}
-	s.scanMu.Unlock()
-
+	// Load the report first and mark the job done second. The page polls status
+	// and fetches /api/report the moment it sees "done", so publishing in the
+	// other order leaves a window where it would render the *previous* scan.
 	if err == nil {
 		s.mu.Lock()
 		s.load(an.Root, an.Groups, an.Stats)
 		s.mu.Unlock()
 	}
+	job.finish(err)
 }
 
 // scanStatus is the progress report the page polls for.
@@ -158,11 +155,12 @@ func (s *Server) handleScanStatus(w http.ResponseWriter, r *http.Request) {
 	discovered := job.progress.Discovered.Load()
 	processed := job.progress.Processed.Load()
 	walkDone := job.progress.WalkDone.Load()
+	done, failure := job.outcome()
 
 	status := scanStatus{
-		Running:    !job.done,
-		Done:       job.done,
-		Error:      job.err,
+		Running:    !done,
+		Done:       done,
+		Error:      failure,
 		Discovered: discovered,
 		Processed:  processed,
 		Bytes:      job.progress.Bytes.Load(),
@@ -171,9 +169,9 @@ func (s *Server) handleScanStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
-	case job.err != "":
+	case failure != "":
 		status.Phase = "error"
-	case job.done:
+	case done:
 		status.Phase = "done"
 	case walkDone && processed >= discovered && discovered > 0:
 		// Reading is finished; the remaining work is comparing hashes.
@@ -193,7 +191,7 @@ func (s *Server) handleScanCancel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.scanMu.Lock()
-	if s.job != nil && !s.job.done {
+	if s.job != nil && !s.job.finished() {
 		s.job.cancel()
 	}
 	s.scanMu.Unlock()
@@ -566,7 +564,7 @@ func (s *Server) handleMerge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.scanMu.Lock()
-	if s.mergeJob != nil && !s.mergeJob.done {
+	if s.mergeJob != nil && !s.mergeJob.finished() {
 		s.scanMu.Unlock()
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "a comparison is already running"})
 		return
@@ -591,16 +589,8 @@ func (s *Server) runMergeJob(ctx context.Context, job *scanJob, req mergeRequest
 		Progress:  job.progress,
 	})
 
-	s.scanMu.Lock()
-	job.done = true
 	if err != nil {
-		job.err = err.Error()
-	} else {
-		s.mergeResult = result
-	}
-	s.scanMu.Unlock()
-
-	if err != nil {
+		job.finish(err)
 		return
 	}
 
@@ -615,6 +605,7 @@ func (s *Server) runMergeJob(ctx context.Context, job *scanJob, req mergeRequest
 	s.mu.Unlock()
 
 	s.scanMu.Lock()
+	s.mergeResult = result
 	s.mergeCopy = make(map[string]bool, len(result.New))
 	for _, f := range result.New {
 		if abs, aerr := filepath.Abs(f.Path); aerr == nil {
@@ -622,6 +613,10 @@ func (s *Server) runMergeJob(ctx context.Context, job *scanJob, req mergeRequest
 		}
 	}
 	s.scanMu.Unlock()
+
+	// Marked done last, once the result and both permission sets are in place:
+	// the page asks for /api/merge/result as soon as it sees "done".
+	job.finish(nil)
 }
 
 func (s *Server) handleMergeStatus(w http.ResponseWriter, r *http.Request) {
@@ -634,19 +629,21 @@ func (s *Server) handleMergeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	done, failure := job.outcome()
+
 	status := scanStatus{
-		Running:    !job.done,
-		Done:       job.done,
-		Error:      job.err,
+		Running:    !done,
+		Done:       done,
+		Error:      failure,
 		Discovered: job.progress.Discovered.Load(),
 		Processed:  job.progress.Processed.Load(),
 		Bytes:      job.progress.Bytes.Load(),
 		ElapsedSec: int(time.Since(job.startedAt).Seconds()),
 	}
 	switch {
-	case job.err != "":
+	case failure != "":
 		status.Phase = "error"
-	case job.done:
+	case done:
 		status.Phase = "done"
 	default:
 		status.Phase = "scanning"

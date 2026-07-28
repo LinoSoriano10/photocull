@@ -67,14 +67,53 @@ type Server struct {
 }
 
 // scanJob is a running or finished background scan.
+//
+// It carries its own mutex rather than borrowing the server's. The job outlives
+// the request that created it, and the goroutine writing its outcome is not the
+// one reading it — so tying its safety to a server field invites exactly the bug
+// that used to live here: the status handler copied the job *pointer* under
+// scanMu, released the lock, and then read the fields outside it. Holding a lock
+// on one side of a shared write is the same as holding no lock at all.
+//
+// progress, cancel, startedAt and similar are written once before the goroutine
+// starts, so the `go` statement already orders them and they need no lock.
 type scanJob struct {
 	progress  *scanner.Progress
 	cancel    context.CancelFunc
 	startedAt time.Time
 	similar   bool
 
+	mu   sync.Mutex
 	done bool
 	err  string // non-empty if the scan failed or was cancelled
+}
+
+// finish records the outcome of the job.
+//
+// Callers must publish whatever the job produced *before* calling this: once
+// done is set, a page polling for status will immediately ask for the result.
+func (j *scanJob) finish(err error) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	j.done = true
+	if err != nil {
+		j.err = err.Error()
+	}
+}
+
+// outcome reports how far the job has got. Both values come back from one
+// critical section, so a status report can never pair a stale "done" with a
+// fresh error.
+func (j *scanJob) outcome() (done bool, failure string) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	return j.done, j.err
+}
+
+// finished reports whether the job has completed.
+func (j *scanJob) finished() bool {
+	done, _ := j.outcome()
+	return done
 }
 
 // New builds a server with the scan already done — used by `serve <dir>`.

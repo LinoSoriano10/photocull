@@ -59,6 +59,11 @@ type Server struct {
 
 	// scanMu guards the scan and merge jobs, which run in the background so the
 	// page can poll their progress rather than block on one long request.
+	//
+	// mergeCopy is built whole inside one critical section and never touched
+	// again, which is why a reader may take the reference under the lock and
+	// then read the map outside it. Anything that later mutates it in place
+	// breaks that, and the breakage would be invisible without -race.
 	scanMu      sync.Mutex
 	job         *scanJob
 	mergeJob    *scanJob

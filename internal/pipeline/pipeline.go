@@ -65,11 +65,11 @@ func Run(ctx context.Context, opts Options) (*Analysis, error) {
 	}
 
 	result, err := scanner.Scan(ctx, scanner.Options{
-		Root:         root,
-		Workers:      opts.Workers,
-		Extensions:   opts.Extensions,
-		ComputePHash: opts.Similar,
-		Progress:     opts.Progress,
+		Root:       root,
+		Workers:    opts.Workers,
+		Extensions: opts.Extensions,
+		DeepScan:   opts.Similar,
+		Progress:   opts.Progress,
 	})
 	if err != nil {
 		return nil, err

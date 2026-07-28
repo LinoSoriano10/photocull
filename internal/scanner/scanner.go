@@ -46,17 +46,23 @@ type FileMeta struct {
 	// SHA256 is always present: it is what exact duplicate detection needs.
 	SHA256 string `json:"sha256"`
 
-	// Decoded reports whether the image data could be read. A corrupt JPEG is
-	// still deduplicated by SHA256, it just cannot take part in similarity
-	// matching.
+	// Decoded reports whether the file's contents could be interpreted. A
+	// corrupt JPEG is still deduplicated by SHA256, it just cannot take part in
+	// similarity matching.
 	Decoded bool `json:"decoded"`
 	Width   int  `json:"width"`
 	Height  int  `json:"height"`
 
-	// PHash is only set when the scan was asked for perceptual hashes and the
-	// image decoded successfully.
-	PHash    uint64 `json:"pHash,omitempty"`
-	HasPHash bool   `json:"hasPHash"`
+	// Fingerprint is a 64-bit summary of what the file *contains*, as opposed
+	// to which bytes it is made of. It is only set when the scan asked for one
+	// and the file's contents could be read.
+	//
+	// Every file in a single scan is fingerprinted by the same algorithm. That
+	// invariant is load-bearing rather than incidental: dedupe compares these
+	// with a plain Hamming distance, and two fingerprints produced by different
+	// algorithms sitting a short distance apart would mean nothing at all.
+	Fingerprint    uint64 `json:"fingerprint,omitempty"`
+	HasFingerprint bool   `json:"hasFingerprint"`
 }
 
 // Pixels is the resolution of the image, used to decide which copy to keep.
@@ -65,7 +71,7 @@ func (f FileMeta) Pixels() int64 {
 }
 
 // ErrorKind separates "photocull could not read this file at all" from "the
-// file was read but its image data is unusable".
+// file was read but its contents could not be interpreted".
 type ErrorKind string
 
 const (
@@ -99,11 +105,17 @@ type Progress struct {
 
 // Options configures a scan.
 type Options struct {
-	Root         string
-	Workers      int      // 0 means one worker per CPU core
-	Extensions   []string // empty means imageutil.DefaultExtensions
-	ComputePHash bool
-	Progress     *Progress // optional; updated live during the scan
+	Root       string
+	Workers    int      // 0 means one worker per CPU core
+	Extensions []string // empty means imageutil.DefaultExtensions
+
+	// DeepScan asks for a similarity fingerprint as well as a content hash.
+	// It costs a full read and decode of every file, so it is off unless the
+	// caller actually intends to match files that are alike rather than
+	// identical.
+	DeepScan bool
+
+	Progress *Progress // optional; updated live during the scan
 }
 
 // Result is the outcome of a scan.
@@ -205,7 +217,7 @@ func Scan(ctx context.Context, opts Options) (*Result, error) {
 		wg.Add(1)
 		group.Go(func() error {
 			defer wg.Done()
-			return work(ctx, paths, results, opts.ComputePHash)
+			return work(ctx, paths, results, opts.DeepScan)
 		})
 	}
 	go func() {
@@ -315,7 +327,7 @@ func walk(ctx context.Context, root string, accepted map[string]bool, out chan<-
 }
 
 // work pulls paths until the channel closes or ctx is cancelled.
-func work(ctx context.Context, paths <-chan string, out chan<- workerOutput, computePHash bool) error {
+func work(ctx context.Context, paths <-chan string, out chan<- workerOutput, deepScan bool) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -325,7 +337,7 @@ func work(ctx context.Context, paths <-chan string, out chan<- workerOutput, com
 				return nil
 			}
 			select {
-			case out <- process(path, computePHash):
+			case out <- process(path, deepScan):
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -335,7 +347,7 @@ func work(ctx context.Context, paths <-chan string, out chan<- workerOutput, com
 
 // process reads one file exactly once and derives everything from that single
 // pass.
-func process(path string, computePHash bool) workerOutput {
+func process(path string, deepScan bool) workerOutput {
 	f, err := os.Open(path)
 	if err != nil {
 		return workerOutput{scanErr: &ScanError{Path: path, Kind: ErrorRead, Message: err.Error()}}
@@ -357,7 +369,7 @@ func process(path string, computePHash bool) workerOutput {
 	meta := FileMeta{Path: path, Size: info.Size(), ModTime: info.ModTime()}
 	var scanErr *ScanError
 
-	if computePHash {
+	if deepScan {
 		img, decodeErr := imageutil.Decode(tee)
 		if decodeErr != nil {
 			scanErr = &ScanError{Path: path, Kind: ErrorDecode, Message: decodeErr.Error()}
@@ -369,7 +381,7 @@ func process(path string, computePHash bool) workerOutput {
 			if phash, hashErr := hashing.Perceptual(img); hashErr != nil {
 				scanErr = &ScanError{Path: path, Kind: ErrorDecode, Message: hashErr.Error()}
 			} else {
-				meta.PHash, meta.HasPHash = phash, true
+				meta.Fingerprint, meta.HasFingerprint = phash, true
 			}
 		}
 	} else {

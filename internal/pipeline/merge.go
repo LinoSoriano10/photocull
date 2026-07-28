@@ -60,7 +60,7 @@ func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 
 	// Index the library first, then walk the source. Both feed the same
 	// progress counters, so the UI shows steady movement across the whole job.
-	baseRes, err := scanner.Scan(ctx, scanner.Options{Root: base, ComputePHash: opts.Similar, Progress: opts.Progress})
+	baseRes, err := scanner.Scan(ctx, scanner.Options{Root: base, DeepScan: opts.Similar, Progress: opts.Progress})
 	if err != nil {
 		return nil, err
 	}
@@ -70,19 +70,19 @@ func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 		// total is already known.
 		opts.Progress.WalkDone.Store(false)
 	}
-	srcRes, err := scanner.Scan(ctx, scanner.Options{Root: source, ComputePHash: opts.Similar, Progress: opts.Progress})
+	srcRes, err := scanner.Scan(ctx, scanner.Options{Root: source, DeepScan: opts.Similar, Progress: opts.Progress})
 	if err != nil {
 		return nil, err
 	}
 
 	baseHashes := make(map[string]bool, len(baseRes.Files))
-	var basePHashes []uint64
+	var baseFingerprints []uint64
 	for _, f := range baseRes.Files {
 		if f.SHA256 != "" {
 			baseHashes[f.SHA256] = true
 		}
-		if f.HasPHash {
-			basePHashes = append(basePHashes, f.PHash)
+		if f.HasFingerprint {
+			baseFingerprints = append(baseFingerprints, f.Fingerprint)
 		}
 	}
 
@@ -97,7 +97,7 @@ func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 	// Track what we have already accepted as new, so two copies of the same
 	// new photo in the source do not both get imported.
 	acceptedHashes := make(map[string]bool)
-	var acceptedPHashes []uint64
+	var acceptedFingerprints []uint64
 
 	for _, f := range srcRes.Files {
 		// Already in the library?
@@ -105,7 +105,7 @@ func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 			analysis.Duplicates++
 			continue
 		}
-		if opts.Similar && f.HasPHash && nearAny(f.PHash, basePHashes, opts.Threshold) {
+		if opts.Similar && f.HasFingerprint && nearAny(f.Fingerprint, baseFingerprints, opts.Threshold) {
 			analysis.Duplicates++
 			continue
 		}
@@ -114,7 +114,7 @@ func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 			analysis.Duplicates++
 			continue
 		}
-		if opts.Similar && f.HasPHash && nearAny(f.PHash, acceptedPHashes, opts.Threshold) {
+		if opts.Similar && f.HasFingerprint && nearAny(f.Fingerprint, acceptedFingerprints, opts.Threshold) {
 			analysis.Duplicates++
 			continue
 		}
@@ -123,8 +123,8 @@ func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 		if f.SHA256 != "" {
 			acceptedHashes[f.SHA256] = true
 		}
-		if f.HasPHash {
-			acceptedPHashes = append(acceptedPHashes, f.PHash)
+		if f.HasFingerprint {
+			acceptedFingerprints = append(acceptedFingerprints, f.Fingerprint)
 		}
 	}
 

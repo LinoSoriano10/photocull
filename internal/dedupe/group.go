@@ -9,7 +9,7 @@ import (
 	"photocull/internal/scanner"
 )
 
-// DefaultThreshold is the Hamming distance below which two perceptual hashes
+// DefaultThreshold is the Hamming distance below which two photo fingerprints
 // are treated as the same photo.
 //
 // Out of 64 bits, 8 is the value that in practice catches resized and
@@ -77,21 +77,25 @@ func GroupExact(files []scanner.FileMeta, keep KeepStrategy) []Group {
 	return buildGroups(files, uf, keep)
 }
 
-// GroupSimilar finds files that are the same photo even if the bytes differ.
+// GroupSimilar finds files with the same content even if the bytes differ.
 //
-// It unions on two signals at once: an identical content hash, and perceptual
-// hashes within threshold of each other. Doing both in a single pass means a
-// photo, its resized copy and a byte-identical backup of it all land in one
-// group instead of being reported twice — and files whose pixels could not be
-// decoded still get deduplicated through their content hash.
+// It unions on two signals at once: an identical content hash, and fingerprints
+// within threshold of each other. Doing both in a single pass means a photo,
+// its resized copy and a byte-identical backup of it all land in one group
+// instead of being reported twice — and files whose contents could not be read
+// still get deduplicated through their content hash.
+//
+// The fingerprints are compared as bare 64-bit words, which only works because
+// the scanner guarantees every file in one run was fingerprinted by the same
+// algorithm. See scanner.FileMeta.Fingerprint.
 func GroupSimilar(files []scanner.FileMeta, threshold int, keep KeepStrategy) []Group {
 	uf := newUnionFind(len(files))
 	unionByContentHash(files, uf)
 
-	// Only files that actually produced a perceptual hash can be compared.
+	// Only files that actually produced a fingerprint can be compared.
 	candidates := make([]int, 0, len(files))
 	for i, f := range files {
-		if f.HasPHash {
+		if f.HasFingerprint {
 			candidates = append(candidates, i)
 		}
 	}
@@ -104,7 +108,7 @@ func GroupSimilar(files []scanner.FileMeta, threshold int, keep KeepStrategy) []
 	for a := 0; a < len(candidates); a++ {
 		for b := a + 1; b < len(candidates); b++ {
 			i, j := candidates[a], candidates[b]
-			if hashing.Distance(files[i].PHash, files[j].PHash) <= threshold {
+			if hashing.Distance(files[i].Fingerprint, files[j].Fingerprint) <= threshold {
 				uf.union(i, j)
 			}
 		}

@@ -21,9 +21,9 @@ func file(path, sha string) scanner.FileMeta {
 	}
 }
 
-func withPHash(f scanner.FileMeta, phash uint64) scanner.FileMeta {
-	f.PHash = phash
-	f.HasPHash = true
+func withFingerprint(f scanner.FileMeta, fingerprint uint64) scanner.FileMeta {
+	f.Fingerprint = fingerprint
+	f.HasFingerprint = true
 	return f
 }
 
@@ -99,9 +99,9 @@ func TestGroupExact(t *testing.T) {
 
 func TestGroupSimilarClustersNearbyHashes(t *testing.T) {
 	files := []scanner.FileMeta{
-		withPHash(file("photo.jpg", "h1"), 0b0000),
-		withPHash(file("photo_resized.jpg", "h2"), 0b0011), // 2 bits away
-		withPHash(file("unrelated.jpg", "h3"), ^uint64(0)), // 64 bits away
+		withFingerprint(file("photo.jpg", "h1"), 0b0000),
+		withFingerprint(file("photo_resized.jpg", "h2"), 0b0011), // 2 bits away
+		withFingerprint(file("unrelated.jpg", "h3"), ^uint64(0)), // 64 bits away
 	}
 
 	groups := GroupSimilar(files, 8, DefaultKeepStrategy)
@@ -123,9 +123,9 @@ func TestGroupSimilarClustersNearbyHashes(t *testing.T) {
 // them would hand the user the same decision twice.
 func TestGroupSimilarFollowsChains(t *testing.T) {
 	files := []scanner.FileMeta{
-		withPHash(file("a.jpg", "h1"), 0x00), // 4 bits from b
-		withPHash(file("b.jpg", "h2"), 0x0F), // 4 bits from c
-		withPHash(file("c.jpg", "h3"), 0xFF), // 8 bits from a: beyond the threshold
+		withFingerprint(file("a.jpg", "h1"), 0x00), // 4 bits from b
+		withFingerprint(file("b.jpg", "h2"), 0x0F), // 4 bits from c
+		withFingerprint(file("c.jpg", "h3"), 0xFF), // 8 bits from a: beyond the threshold
 	}
 
 	groups := GroupSimilar(files, 4, DefaultKeepStrategy)
@@ -140,8 +140,8 @@ func TestGroupSimilarFollowsChains(t *testing.T) {
 
 func TestGroupSimilarRespectsThreshold(t *testing.T) {
 	files := []scanner.FileMeta{
-		withPHash(file("a.jpg", "h1"), 0b0000),
-		withPHash(file("b.jpg", "h2"), 0b0111), // exactly 3 bits away
+		withFingerprint(file("a.jpg", "h1"), 0b0000),
+		withFingerprint(file("b.jpg", "h2"), 0b0111), // exactly 3 bits away
 	}
 
 	if groups := GroupSimilar(files, 3, DefaultKeepStrategy); len(groups) != 1 {
@@ -159,7 +159,7 @@ func TestGroupSimilarStillDeduplicatesUndecodableFiles(t *testing.T) {
 	files := []scanner.FileMeta{
 		file("broken.jpg", "same"),        // no perceptual hash
 		file("backup/broken.jpg", "same"), // no perceptual hash
-		withPHash(file("fine.jpg", "other"), 0x1234),
+		withFingerprint(file("fine.jpg", "other"), 0x1234),
 	}
 
 	groups := GroupSimilar(files, 8, DefaultKeepStrategy)
@@ -177,9 +177,9 @@ func TestGroupSimilarStillDeduplicatesUndecodableFiles(t *testing.T) {
 // reported as two overlapping ones.
 func TestGroupSimilarMergesExactAndSimilar(t *testing.T) {
 	files := []scanner.FileMeta{
-		withPHash(file("photo.jpg", "same"), 0b0000),
-		withPHash(file("backup/photo.jpg", "same"), 0b0000),
-		withPHash(file("photo_small.jpg", "other"), 0b0001),
+		withFingerprint(file("photo.jpg", "same"), 0b0000),
+		withFingerprint(file("backup/photo.jpg", "same"), 0b0000),
+		withFingerprint(file("photo_small.jpg", "other"), 0b0001),
 	}
 
 	groups := GroupSimilar(files, 8, DefaultKeepStrategy)

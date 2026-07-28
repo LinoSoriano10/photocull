@@ -78,14 +78,14 @@ func TestScanExtensionFilterIsForgiving(t *testing.T) {
 // were not drained through the hasher, every digest would silently be the hash
 // of a prefix — and duplicate detection would quietly break.
 func TestScanHashCoversWholeFile(t *testing.T) {
-	for _, computePHash := range []bool{false, true} {
+	for _, deepScan := range []bool{false, true} {
 		name := "header only"
-		if computePHash {
+		if deepScan {
 			name = "full decode"
 		}
 
 		t.Run(name, func(t *testing.T) {
-			res := scanFixture(t, "similar", Options{ComputePHash: computePHash})
+			res := scanFixture(t, "similar", Options{DeepScan: deepScan})
 
 			for _, f := range res.Files {
 				want, err := hashing.SumFile(f.Path)
@@ -112,17 +112,17 @@ func TestScanReadsDimensionsWithoutFullDecode(t *testing.T) {
 		if f.Width == 0 || f.Height == 0 {
 			t.Errorf("%s: dimensions %dx%d", filepath.Base(f.Path), f.Width, f.Height)
 		}
-		if f.HasPHash {
+		if f.HasFingerprint {
 			t.Errorf("%s: computed a perceptual hash that was never requested", filepath.Base(f.Path))
 		}
 	}
 }
 
 func TestScanComputesPerceptualHashOnRequest(t *testing.T) {
-	res := scanFixture(t, "similar", Options{ComputePHash: true})
+	res := scanFixture(t, "similar", Options{DeepScan: true})
 
 	for _, f := range res.Files {
-		if !f.HasPHash {
+		if !f.HasFingerprint {
 			t.Errorf("%s: no perceptual hash", filepath.Base(f.Path))
 		}
 		if f.Pixels() != int64(f.Width)*int64(f.Height) {
@@ -135,7 +135,7 @@ func TestScanComputesPerceptualHashOnRequest(t *testing.T) {
 // full of old backups: a truncated photo must be reported, not fatal, and must
 // still be hashed so it can take part in exact deduplication.
 func TestScanSurvivesCorruptFile(t *testing.T) {
-	res := scanFixture(t, "corrupt", Options{ComputePHash: true})
+	res := scanFixture(t, "corrupt", Options{DeepScan: true})
 
 	if len(res.Files) != 1 {
 		t.Fatalf("scanned %d files, want 1", len(res.Files))
@@ -145,7 +145,7 @@ func TestScanSurvivesCorruptFile(t *testing.T) {
 	if f.SHA256 == "" {
 		t.Error("a corrupt file was left without a content hash, so it cannot be deduplicated at all")
 	}
-	if f.HasPHash {
+	if f.HasFingerprint {
 		t.Error("a truncated image somehow produced a perceptual hash")
 	}
 	if got := res.DecodeErrors(); got != 1 {

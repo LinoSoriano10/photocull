@@ -530,27 +530,7 @@ func (s *Server) forget(paths []string) {
 		kept = append(kept, g)
 	}
 	s.groups = kept
-	s.stats = recomputeStats(s.stats, s.groups)
-}
-
-// recomputeStats refreshes the reclaimable figures after a deletion, leaving
-// the scan-time totals (files scanned, bytes) untouched.
-func recomputeStats(base report.Stats, groups []dedupe.Group) report.Stats {
-	base.Groups = len(groups)
-	base.ExactGroups, base.SimilarGroups = 0, 0
-	base.DuplicateFiles = 0
-	base.ReclaimableBytes = 0
-	for _, g := range groups {
-		switch g.Type {
-		case dedupe.Exact:
-			base.ExactGroups++
-		case dedupe.Similar:
-			base.SimilarGroups++
-		}
-		base.DuplicateFiles += len(g.Files) - 1
-		base.ReclaimableBytes += g.ReclaimableBytes()
-	}
-	return base
+	s.stats = report.Recount(s.stats, s.groups)
 }
 
 // --- Add to library (merge) ---

@@ -3,6 +3,7 @@ package imageutil
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -40,44 +41,16 @@ func TestDecodeConfigReadsDimensions(t *testing.T) {
 	}
 }
 
-func TestNormaliseExtensions(t *testing.T) {
-	set := NormaliseExtensions([]string{"JPG", ".Jpeg", "  png ", "", "heic"})
-
-	for _, want := range []string{".jpg", ".jpeg", ".png", ".heic"} {
-		if !set[want] {
-			t.Errorf("normalised set missing %q; got %v", want, set)
-		}
-	}
-	if set[""] {
-		t.Error("empty extension should be dropped")
-	}
-}
-
-func TestHasExtension(t *testing.T) {
-	set := NormaliseExtensions(DefaultExtensions)
-
-	cases := map[string]bool{
-		"photo.jpg":   true,
-		"PHOTO.JPG":   true,
-		"clip.HEIC":   true,
-		"scan.heif":   true,
-		"notes.txt":   false,
-		"archive.zip": false,
-		"noext":       false,
-	}
-	for path, want := range cases {
-		if got := HasExtension(path, set); got != want {
-			t.Errorf("HasExtension(%q) = %v, want %v", path, got, want)
-		}
-	}
-}
-
 // TestDefaultExtensionsIncludeHEIC guards the iPhone case: the whole reason the
 // HEIC decoder is pulled in is that a photo library scan must not silently skip
 // every .heic file.
+//
+// It checks the slice directly rather than through fingerprint's extension
+// helpers. Those moved out of this package, and reaching for them here would
+// import a package that imports this one — a cycle the compiler only reports
+// when the tests are built.
 func TestDefaultExtensionsIncludeHEIC(t *testing.T) {
-	set := NormaliseExtensions(DefaultExtensions)
-	if !set[".heic"] {
+	if !slices.Contains(DefaultExtensions, ".heic") {
 		t.Error("DefaultExtensions must include .heic or iPhone photos are ignored")
 	}
 }

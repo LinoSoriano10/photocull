@@ -40,29 +40,62 @@ type Report struct {
 	Errors []scanner.ScanError `json:"errors,omitempty"`
 }
 
+// Counts is what a set of groups adds up to.
+//
+// It exists because two places need the answer: the report built after a scan,
+// and the web UI's refresh after files are deleted. They used to each carry
+// their own copy of the tally, which meant every new kind of group had to be
+// remembered in two files or the numbers would quietly disagree.
+type Counts struct {
+	Exact, Similar   int
+	DuplicateFiles   int
+	ReclaimableBytes int64
+}
+
+// CountGroups tallies what the given groups add up to.
+func CountGroups(groups []dedupe.Group) Counts {
+	var c Counts
+	for _, g := range groups {
+		switch g.Type {
+		case dedupe.Exact:
+			c.Exact++
+		case dedupe.Similar:
+			c.Similar++
+		}
+		c.DuplicateFiles += len(g.Files) - 1
+		c.ReclaimableBytes += g.ReclaimableBytes()
+	}
+	return c
+}
+
+// applyTo writes a tally into the group-derived fields of stats, leaving the
+// scan-time totals alone.
+func (c Counts) applyTo(stats *Stats, groups []dedupe.Group) {
+	stats.Groups = len(groups)
+	stats.ExactGroups = c.Exact
+	stats.SimilarGroups = c.Similar
+	stats.DuplicateFiles = c.DuplicateFiles
+	stats.ReclaimableBytes = c.ReclaimableBytes
+}
+
 // Build derives the summary from a scan and its grouping.
 func Build(res *scanner.Result, groups []dedupe.Group) Stats {
 	stats := Stats{
 		FilesScanned: len(res.Files),
 		TotalBytes:   res.TotalBytes(),
-		Groups:       len(groups),
 		ReadErrors:   res.ReadErrors(),
 		DecodeErrors: res.DecodeErrors(),
 		Duration:     res.Duration,
 	}
-
-	for _, g := range groups {
-		switch g.Type {
-		case dedupe.Exact:
-			stats.ExactGroups++
-		case dedupe.Similar:
-			stats.SimilarGroups++
-		}
-		stats.DuplicateFiles += len(g.Files) - 1
-		stats.ReclaimableBytes += g.ReclaimableBytes()
-	}
-
+	CountGroups(groups).applyTo(&stats, groups)
 	return stats
+}
+
+// Recount refreshes the group-derived figures after files have been deleted,
+// leaving the scan-time totals (files scanned, bytes read) untouched.
+func Recount(base Stats, groups []dedupe.Group) Stats {
+	CountGroups(groups).applyTo(&base, groups)
+	return base
 }
 
 // JSON renders the report for scripts and for the web UI.

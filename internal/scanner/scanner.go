@@ -29,8 +29,8 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"photocull/internal/fingerprint"
 	"photocull/internal/hashing"
-	"photocull/internal/imageutil"
 )
 
 // channelBuffer keeps the walker slightly ahead of the workers so neither
@@ -107,12 +107,16 @@ type Progress struct {
 type Options struct {
 	Root       string
 	Workers    int      // 0 means one worker per CPU core
-	Extensions []string // empty means imageutil.DefaultExtensions
+	Extensions []string // empty means whatever the extractor looks at
+
+	// Extractor decides what a fingerprint means for this run. Nil means
+	// photos, so every caller written before the seam existed keeps its
+	// behaviour exactly.
+	Extractor fingerprint.Extractor
 
 	// DeepScan asks for a similarity fingerprint as well as a content hash.
-	// It costs a full read and decode of every file, so it is off unless the
-	// caller actually intends to match files that are alike rather than
-	// identical.
+	// It costs a full read of every file, so it is off unless the caller
+	// actually intends to match files that are alike rather than identical.
 	DeepScan bool
 
 	Progress *Progress // optional; updated live during the scan
@@ -185,11 +189,15 @@ func Scan(ctx context.Context, opts Options) (*Result, error) {
 	if workers <= 0 {
 		workers = runtime.NumCPU()
 	}
+	extractor := opts.Extractor
+	if extractor == nil {
+		extractor = fingerprint.Default()
+	}
 	exts := opts.Extensions
 	if len(exts) == 0 {
-		exts = imageutil.DefaultExtensions
+		exts = extractor.Extensions()
 	}
-	accepted := imageutil.NormaliseExtensions(exts)
+	accepted := newExtSet(exts)
 
 	paths := make(chan string, channelBuffer)
 	results := make(chan workerOutput, channelBuffer)
@@ -217,7 +225,7 @@ func Scan(ctx context.Context, opts Options) (*Result, error) {
 		wg.Add(1)
 		group.Go(func() error {
 			defer wg.Done()
-			return work(ctx, paths, results, opts.DeepScan)
+			return work(ctx, paths, results, extractor, opts.DeepScan)
 		})
 	}
 	go func() {
@@ -273,6 +281,25 @@ var skippedDirs = map[string]bool{
 	"system volume information": true,
 }
 
+// extSet decides which files a scan looks at.
+//
+// A nil set means every file. That is not a convenience: the documents kind
+// deliberately has no extension filter, because a .zip, an .mp3 or a legacy
+// .doc still has to be compared by content hash, and a filter would leave blind
+// spots exactly where the user assumed photocull was looking.
+type extSet map[string]bool
+
+func newExtSet(exts []string) extSet {
+	if len(exts) == 0 {
+		return nil
+	}
+	return fingerprint.NormaliseExtensions(exts)
+}
+
+func (s extSet) accepts(path string) bool {
+	return s == nil || fingerprint.HasExtension(path, s)
+}
+
 func shouldSkipDir(name string) bool {
 	if skippedDirs[strings.ToLower(name)] {
 		return true
@@ -284,7 +311,7 @@ func shouldSkipDir(name string) bool {
 // walk lists candidate files, sending each one downstream. It returns the
 // directories it could not read rather than failing the whole scan over one
 // permission error.
-func walk(ctx context.Context, root string, accepted map[string]bool, out chan<- string, progress *Progress) ([]ScanError, error) {
+func walk(ctx context.Context, root string, accepted extSet, out chan<- string, progress *Progress) ([]ScanError, error) {
 	var problems []ScanError
 
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -308,7 +335,7 @@ func walk(ctx context.Context, root string, accepted map[string]bool, out chan<-
 		if !d.Type().IsRegular() {
 			return nil
 		}
-		if !imageutil.HasExtension(path, accepted) {
+		if !accepted.accepts(path) {
 			return nil
 		}
 
@@ -327,7 +354,7 @@ func walk(ctx context.Context, root string, accepted map[string]bool, out chan<-
 }
 
 // work pulls paths until the channel closes or ctx is cancelled.
-func work(ctx context.Context, paths <-chan string, out chan<- workerOutput, deepScan bool) error {
+func work(ctx context.Context, paths <-chan string, out chan<- workerOutput, ex fingerprint.Extractor, deepScan bool) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -337,7 +364,7 @@ func work(ctx context.Context, paths <-chan string, out chan<- workerOutput, dee
 				return nil
 			}
 			select {
-			case out <- process(path, deepScan):
+			case out <- process(path, ex, deepScan):
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -347,7 +374,7 @@ func work(ctx context.Context, paths <-chan string, out chan<- workerOutput, dee
 
 // process reads one file exactly once and derives everything from that single
 // pass.
-func process(path string, deepScan bool) workerOutput {
+func process(path string, ex fingerprint.Extractor, deepScan bool) workerOutput {
 	f, err := os.Open(path)
 	if err != nil {
 		return workerOutput{scanErr: &ScanError{Path: path, Kind: ErrorRead, Message: err.Error()}}
@@ -361,44 +388,25 @@ func process(path string, deepScan bool) workerOutput {
 
 	hasher := hashing.NewSHA256()
 
-	// The decoder and the hasher share one pass over the file. Reading every
-	// photo twice would double the I/O, and on an external drive holding
+	// The extractor and the hasher share one pass over the file. Reading every
+	// file twice would double the I/O, and on an external drive holding
 	// thousands of them the disk is the bottleneck, not the CPU.
 	tee := io.TeeReader(f, hasher)
 
 	meta := FileMeta{Path: path, Size: info.Size(), ModTime: info.ModTime()}
 	var scanErr *ScanError
 
-	if deepScan {
-		img, decodeErr := imageutil.Decode(tee)
-		if decodeErr != nil {
-			scanErr = &ScanError{Path: path, Kind: ErrorDecode, Message: decodeErr.Error()}
-		} else {
-			bounds := img.Bounds()
-			meta.Decoded = true
-			meta.Width, meta.Height = bounds.Dx(), bounds.Dy()
-
-			if phash, hashErr := hashing.Perceptual(img); hashErr != nil {
-				scanErr = &ScanError{Path: path, Kind: ErrorDecode, Message: hashErr.Error()}
-			} else {
-				meta.Fingerprint, meta.HasFingerprint = phash, true
-			}
-		}
-	} else {
-		// Only the header is needed for dimensions, and it comes almost free
-		// while the bytes are already flowing past the hasher.
-		cfg, decodeErr := imageutil.DecodeConfig(tee)
-		if decodeErr != nil {
-			scanErr = &ScanError{Path: path, Kind: ErrorDecode, Message: decodeErr.Error()}
-		} else {
-			meta.Decoded = true
-			meta.Width, meta.Height = cfg.Width, cfg.Height
-		}
+	out := ex.Fingerprint(tee, fingerprint.Input{Path: path, Size: info.Size(), Deep: deepScan})
+	meta.Decoded = out.Understood
+	meta.Width, meta.Height = out.Width, out.Height
+	meta.Fingerprint, meta.HasFingerprint = out.Fingerprint, out.HasFingerprint
+	if out.Err != nil {
+		scanErr = &ScanError{Path: path, Kind: ErrorDecode, Message: out.Err.Error()}
 	}
 
-	// However much of the file the decoder consumed, the rest still has to
+	// However much of the file the extractor consumed, the rest still has to
 	// flow through the hasher — SHA-256 has to cover the whole file, not just
-	// the part that happened to hold the image.
+	// the part that happened to hold the content it understood.
 	if _, err := io.Copy(io.Discard, tee); err != nil {
 		return workerOutput{scanErr: &ScanError{Path: path, Kind: ErrorRead, Message: err.Error()}}
 	}

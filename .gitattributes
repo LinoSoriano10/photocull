@@ -7,3 +7,14 @@
 *.png binary
 *.gif binary
 *.heic binary
+
+# Test fixtures are compared byte for byte, and some of them are deliberately
+# byte-identical pairs. Line-ending normalisation would change their SHA-256
+# between a Windows checkout and a Linux one, so a test that passes locally
+# would fail in CI for a reason nobody would guess from the failure.
+testdata/** -text
+*.pdf binary
+*.docx binary
+*.xlsx binary
+*.pptx binary
+*.zip binary

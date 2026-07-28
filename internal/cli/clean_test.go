@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -126,5 +127,89 @@ func TestCleanReportsWhenNothingToDo(t *testing.T) {
 	}
 	if len(mover.moved) != 0 {
 		t.Errorf("moved files from a directory with no duplicates: %v", mover.moved)
+	}
+}
+
+// runCleanDocsForTest drives clean in documents mode over a directory.
+func runCleanDocsForTest(t *testing.T, dir string, confirm, yes bool) (*recordingMover, string, error) {
+	t.Helper()
+
+	mover := &recordingMover{}
+	out := &strings.Builder{}
+
+	cmd := &cobra.Command{}
+	cmd.SetContext(context.Background())
+
+	opts := &cleanOptions{
+		global:  &globalFlags{kind: "docs"},
+		match:   &matchFlags{similar: true, threshold: 6},
+		confirm: confirm,
+		yes:     yes,
+		mover:   mover,
+		in:      strings.NewReader(""),
+		out:     out,
+	}
+
+	err := runClean(cmd, dir, opts)
+	return mover, out.String(), err
+}
+
+// TestCleanNeverTouchesRelatedGroups is the security-critical test of this
+// command, and it is written as a directory rather than a unit because the bug
+// it guards against would only appear once everything was wired together.
+//
+// A related group is files matched on nothing but their names and sizes,
+// because photocull could not read inside them. Acting on that is not a
+// judgement call the tool is entitled to make. Without the skip in runClean,
+// "clean --confirm --yes" would send them to the recycle bin.
+func TestCleanNeverTouchesRelatedGroups(t *testing.T) {
+	dir := t.TempDir()
+
+	// Two files photocull cannot read inside, with names and sizes that line up
+	// exactly — the strongest possible related match.
+	body := strings.Repeat("\x00\x01\x02\x03", 4096)
+	writeTestFile(t, filepath.Join(dir, "informe.bin"), body)
+	writeTestFile(t, filepath.Join(dir, "informe (1).bin"), body+"tail")
+
+	mover, out, err := runCleanDocsForTest(t, dir, true, true)
+	if err != nil {
+		t.Fatalf("clean --kind docs --confirm --yes: %v", err)
+	}
+
+	for _, moved := range mover.moved {
+		t.Errorf("clean moved %q; files matched only by name and size must never be deleted automatically", moved)
+	}
+	if !strings.Contains(out, "related") {
+		t.Errorf("clean did not tell the user the related groups were left alone:\n%s", out)
+	}
+}
+
+// TestCleanStillDeletesExactDuplicatesInDocumentsMode is the other half: the
+// skip must be narrow. A byte-identical pair is still safe to act on.
+func TestCleanStillDeletesExactDuplicatesInDocumentsMode(t *testing.T) {
+	dir := t.TempDir()
+	body := strings.Repeat("the same document, twice over. ", 200)
+	writeTestFile(t, filepath.Join(dir, "notes.txt"), body)
+	writeTestFile(t, filepath.Join(dir, "backup", "notes.txt"), body)
+
+	mover, _, err := runCleanDocsForTest(t, dir, true, true)
+	if err != nil {
+		t.Fatalf("clean --kind docs: %v", err)
+	}
+	if len(mover.moved) != 1 {
+		t.Fatalf("moved %v, want exactly the one byte-identical copy", mover.moved)
+	}
+	if filepath.Base(filepath.Dir(mover.moved[0])) != "backup" {
+		t.Errorf("moved %q, want the copy under backup/", mover.moved[0])
+	}
+}
+
+func writeTestFile(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

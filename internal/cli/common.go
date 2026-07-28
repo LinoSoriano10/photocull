@@ -1,12 +1,12 @@
 package cli
 
 import (
-	"context"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"photocull/internal/dedupe"
+	"photocull/internal/fingerprint"
 	"photocull/internal/pipeline"
 	"photocull/internal/report"
 	"photocull/internal/scanner"
@@ -22,11 +22,22 @@ type matchFlags struct {
 
 func (m *matchFlags) register(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&m.similar, "similar", false,
-		"also match photos that only look the same (resized, re-compressed, re-encoded)")
+		"also match files that are alike rather than identical (a resized photo, a re-saved document)")
 	cmd.Flags().IntVar(&m.threshold, "threshold", dedupe.DefaultThreshold,
-		"how different two photos may look and still match, 0-64; lower is stricter")
-	cmd.Flags().StringVar(&m.strategy, "strategy", "default",
-		"which copy to suggest keeping: "+strings.Join(dedupe.StrategyNames(), ", "))
+		"how different two files may be and still match, 0-64; lower is stricter (default: 8 for photos, 6 for documents)")
+	cmd.Flags().StringVar(&m.strategy, "strategy", "",
+		"which copy to suggest keeping: "+strings.Join(dedupe.StrategyNames(), ", ")+" (default: resolution for photos, newest for documents)")
+}
+
+// resolve fills in the defaults that depend on --kind.
+//
+// Both are left to the kind unless the user actually typed the flag, which is
+// why this asks cobra rather than comparing against a sentinel: --threshold 8 on
+// a documents scan is a deliberate choice and must survive.
+func (m *matchFlags) resolve(cmd *cobra.Command, kind string) {
+	if !cmd.Flags().Changed("threshold") {
+		m.threshold = fingerprint.DefaultsFor(fingerprint.Kind(kind)).Threshold
+	}
 }
 
 // analysis is a completed scan plus everything derived from it.
@@ -50,11 +61,16 @@ func (a analysis) report() report.Report {
 // analyze scans a directory and groups the duplicates it finds. It is the step
 // scan, clean and serve all begin with, and it delegates to the shared
 // pipeline so the CLI and the web launcher stay in lockstep.
-func analyze(ctx context.Context, dir string, global *globalFlags, match *matchFlags) (*analysis, error) {
-	an, err := pipeline.Run(ctx, pipeline.Options{
+func analyze(cmd *cobra.Command, dir string, global *globalFlags, match *matchFlags) (*analysis, error) {
+	// Resolve the kind-dependent defaults here, once, so scan, clean and serve
+	// cannot drift apart on what --threshold means.
+	match.resolve(cmd, global.kind)
+
+	an, err := pipeline.Run(cmd.Context(), pipeline.Options{
 		Root:       dir,
 		Workers:    global.workers,
 		Extensions: global.extensions,
+		Kind:       global.kind,
 		Similar:    match.similar,
 		Threshold:  match.threshold,
 		Strategy:   match.strategy,

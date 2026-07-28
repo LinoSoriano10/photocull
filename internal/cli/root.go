@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 
 	"github.com/spf13/cobra"
 
-	"photocull/internal/imageutil"
+	"photocull/internal/fingerprint"
 	"photocull/internal/trash"
 	"photocull/internal/webui"
 )
@@ -25,6 +26,7 @@ var ErrInterrupted = errors.New("interrupted")
 type globalFlags struct {
 	workers    int
 	extensions []string
+	kind       string
 }
 
 // Execute runs photocull, returning the error the command produced.
@@ -80,8 +82,15 @@ serve commands directly.`,
 
 	root.PersistentFlags().IntVar(&global.workers, "workers", 0,
 		"number of files to process concurrently (0 = one per CPU core)")
-	root.PersistentFlags().StringSliceVar(&global.extensions, "ext", imageutil.DefaultExtensions,
-		"file extensions to scan")
+	root.PersistentFlags().StringVar(&global.kind, "kind", string(fingerprint.Photos),
+		"what to look for: "+strings.Join(fingerprint.Kinds(), " or "))
+
+	// The default is nil rather than a list, so "unset" resolves to whatever the
+	// chosen kind looks at. Documents deliberately look at everything, so there
+	// is no list that could stand in for them here — and expressing the default
+	// this way means nothing has to ask whether the flag was set.
+	root.PersistentFlags().StringSliceVar(&global.extensions, "ext", nil,
+		"file extensions to scan (default: photo formats; with --kind docs, every file)")
 
 	root.Flags().IntVar(&port, "port", 8080, "port for the launcher web page")
 	root.Flags().StringVar(&host, "host", "127.0.0.1", "address to bind the launcher to")

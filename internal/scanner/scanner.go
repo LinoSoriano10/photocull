@@ -274,11 +274,29 @@ func Scan(ctx context.Context, opts Options) (*Result, error) {
 	return result, nil
 }
 
-// skippedDirs are directories that never hold photos worth deduplicating, and
+// skippedDirs are directories that never hold anything worth deduplicating, and
 // that photocull must not touch on Windows.
+//
+// The operating-system entries matter more now than they used to. Documents
+// mode looks at every extension, which makes "point it at C:\" a realistic
+// thing for somebody to try — and hashing a Windows install is hours of I/O for
+// no possible finding.
+//
+// The match is by directory name at any depth, so a user folder genuinely
+// called "Windows" and full of documents would be skipped too. That is the same
+// trade already accepted for $recycle.bin, and the alternative — matching
+// absolute paths — breaks the moment the drive letter differs.
 var skippedDirs = map[string]bool{
 	"$recycle.bin":              true,
 	"system volume information": true,
+	"$windows.~bt":              true,
+	"$windows.~ws":              true,
+	"windows":                   true,
+	"program files":             true,
+	"program files (x86)":       true,
+	"programdata":               true,
+	"appdata":                   true,
+	"node_modules":              true,
 }
 
 // extSet decides which files a scan looks at.
@@ -331,11 +349,20 @@ func walk(ctx context.Context, root string, accepted extSet, out chan<- string, 
 			return nil
 		}
 
-		// Symlinks and device files are not photos to hash.
+		// Symlinks and device files are not content to hash.
 		if !d.Type().IsRegular() {
 			return nil
 		}
 		if !accepted.accepts(path) {
+			return nil
+		}
+
+		// Empty files are skipped. They are all byte-identical to each other, so
+		// in documents mode — where every extension is scanned — every stray
+		// zero-byte .log and placeholder on the disk would form one enormous
+		// "exact duplicate" group worth nothing at all. A file that cannot
+		// reclaim a single byte cannot be worth a person's attention.
+		if info, err := d.Info(); err == nil && info.Size() == 0 {
 			return nil
 		}
 

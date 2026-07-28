@@ -132,3 +132,58 @@ func TestKeepStrategyHandlesEmptyInput(t *testing.T) {
 		t.Errorf("DefaultKeepStrategy(nil) = %d, want 0", got)
 	}
 }
+
+// TestDocumentKeepStrategyPrefersNewest pins the semantic inversion, which is
+// the whole reason documents need their own strategy.
+//
+// A photograph's oldest copy is the original and every later one has lost
+// pixels. A document's newest copy is the revision the person actually worked
+// on. Applying the photo default to documents would confidently suggest keeping
+// the draft and recycling the final version.
+func TestDocumentKeepStrategyPrefersNewest(t *testing.T) {
+	old := file("draft.docx", "h1")
+	old.ModTime = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	old.Size = 9000 // and bigger, so size cannot be what decides it
+
+	recent := file("final.docx", "h2")
+	recent.ModTime = time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	recent.Size = 4000
+
+	files := []scanner.FileMeta{old, recent}
+
+	if got := DocumentKeepStrategy(files); got != 1 {
+		t.Errorf("DocumentKeepStrategy kept %q; it should keep the newest revision, not the superseded draft", files[got].Path)
+	}
+	// And the contrast that makes the point: the photo default does the opposite.
+	if got := DefaultKeepStrategy(files); got != 0 {
+		t.Errorf("DefaultKeepStrategy kept %q; the photo rule is supposed to prefer the oldest, which is what makes it wrong for documents", files[got].Path)
+	}
+}
+
+func TestKeepNewestIsRegistered(t *testing.T) {
+	for _, name := range []string{"newest", "document"} {
+		if _, err := LookupStrategy(name); err != nil {
+			t.Errorf("LookupStrategy(%q): %v", name, err)
+		}
+	}
+}
+
+// TestDocumentKeepStrategyIgnoresMtimeForIdenticalCopies is the counterpart to
+// the test above, and the case that actually bites on a real disk.
+//
+// Two byte-identical files are not two revisions; one is a copy of the other,
+// and the copy is usually made later. Preferring the newest there would keep
+// the backup and recycle the original, which is precisely backwards.
+func TestDocumentKeepStrategyIgnoresMtimeForIdenticalCopies(t *testing.T) {
+	original := file("notes.txt", "same-hash")
+	original.ModTime = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	backup := file("backup/deep/notes.txt", "same-hash")
+	backup.ModTime = time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC) // copied later
+
+	files := []scanner.FileMeta{original, backup}
+
+	if got := DocumentKeepStrategy(files); got != 0 {
+		t.Errorf("kept %q; for byte-identical files the later timestamp just means it was copied later, so the shallower path is the one to keep", files[got].Path)
+	}
+}

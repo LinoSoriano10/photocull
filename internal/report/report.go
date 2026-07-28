@@ -29,6 +29,16 @@ type Stats struct {
 	ReadErrors       int           `json:"readErrors"`
 	DecodeErrors     int           `json:"decodeErrors"`
 	Duration         time.Duration `json:"durationNanos"`
+
+	// The related tier is reported separately from the figures above, because
+	// it is a set of guesses and the headline must stay honest.
+	RelatedGroups int   `json:"relatedGroups,omitempty"`
+	RelatedFiles  int   `json:"relatedFiles,omitempty"`
+	RelatedBytes  int64 `json:"relatedBytes,omitempty"`
+
+	// Kind records what was scanned, so the review UI can present itself
+	// correctly without being told separately.
+	Kind string `json:"kind,omitempty"`
 }
 
 // Report bundles the stats with the groups behind them, for --json output and
@@ -46,16 +56,35 @@ type Report struct {
 // and the web UI's refresh after files are deleted. They used to each carry
 // their own copy of the tally, which meant every new kind of group had to be
 // remembered in two files or the numbers would quietly disagree.
+//
+// Related groups are counted separately from the other two, and that separation
+// is the point rather than bookkeeping. A related group is a guess, and the
+// headline figure — "241 files could be removed, freeing 9.3 GB" — must not be
+// inflated with guesses. It is tempting to fold them in because it makes the
+// tool look better; that temptation is exactly why the split is written down.
 type Counts struct {
-	Exact, Similar   int
+	Exact, Similar, Related int
+
+	// DuplicateFiles and ReclaimableBytes cover the confident tiers only.
 	DuplicateFiles   int
 	ReclaimableBytes int64
+
+	// RelatedFiles and RelatedBytes are what *might* be freed, after a person
+	// has looked.
+	RelatedFiles int
+	RelatedBytes int64
 }
 
 // CountGroups tallies what the given groups add up to.
 func CountGroups(groups []dedupe.Group) Counts {
 	var c Counts
 	for _, g := range groups {
+		if g.Type == dedupe.Related {
+			c.Related++
+			c.RelatedFiles += len(g.Files) - 1
+			c.RelatedBytes += g.ReclaimableBytes()
+			continue
+		}
 		switch g.Type {
 		case dedupe.Exact:
 			c.Exact++
@@ -74,8 +103,11 @@ func (c Counts) applyTo(stats *Stats, groups []dedupe.Group) {
 	stats.Groups = len(groups)
 	stats.ExactGroups = c.Exact
 	stats.SimilarGroups = c.Similar
+	stats.RelatedGroups = c.Related
 	stats.DuplicateFiles = c.DuplicateFiles
 	stats.ReclaimableBytes = c.ReclaimableBytes
+	stats.RelatedFiles = c.RelatedFiles
+	stats.RelatedBytes = c.RelatedBytes
 }
 
 // Build derives the summary from a scan and its grouping.
@@ -115,10 +147,18 @@ func (s Stats) Summary() string {
 		return b.String() + errorLines(s)
 	}
 
+	confident := s.Groups - s.RelatedGroups
 	fmt.Fprintf(&b, "Found %s: %d exact, %d similar\n",
-		plural(s.Groups, "duplicate group", "duplicate groups"), s.ExactGroups, s.SimilarGroups)
+		plural(confident, "duplicate group", "duplicate groups"), s.ExactGroups, s.SimilarGroups)
 	fmt.Fprintf(&b, "%s could be removed, freeing %s\n",
 		plural(s.DuplicateFiles, "file", "files"), HumanBytes(s.ReclaimableBytes))
+
+	// Kept out of the sentence above on purpose: these are guesses, and folding
+	// them into the headline would overstate what photocull actually knows.
+	if s.RelatedGroups > 0 {
+		fmt.Fprintf(&b, "\nAlso found %s where the names and sizes line up but photocull could not read inside the files.\nAbout %s might be freed after a look. Nothing is pre-selected and clean will not touch them.\n",
+			plural(s.RelatedGroups, "group", "groups"), HumanBytes(s.RelatedBytes))
+	}
 
 	if s.ReclaimedBytes > 0 {
 		fmt.Fprintf(&b, "Freed %s\n", HumanBytes(s.ReclaimedBytes))
@@ -134,7 +174,7 @@ func errorLines(s Stats) string {
 			plural(s.ReadErrors, "file", "files"), wasWere(s.ReadErrors))
 	}
 	if s.DecodeErrors > 0 {
-		fmt.Fprintf(&b, "%s could not be decoded and %s compared by content only\n",
+		fmt.Fprintf(&b, "%s could not be interpreted and %s compared by content only\n",
 			plural(s.DecodeErrors, "file", "files"), wasWere(s.DecodeErrors))
 	}
 	return b.String()
@@ -144,25 +184,50 @@ func errorLines(s Stats) string {
 // photocull suggests keeping marked.
 func RenderGroups(w io.Writer, root string, groups []dedupe.Group) {
 	for i, g := range groups {
-		fmt.Fprintf(w, "\nGroup %d  [%s]  %d files, %s reclaimable\n",
-			i+1, g.Type, len(g.Files), HumanBytes(g.ReclaimableBytes()))
+		if g.Type == dedupe.Related {
+			fmt.Fprintf(w, "\nGroup %d  [%s]  %d files, %s if they turn out to be copies\n",
+				i+1, g.Type, len(g.Files), HumanBytes(g.ReclaimableBytes()))
+		} else {
+			fmt.Fprintf(w, "\nGroup %d  [%s]  %d files, %s reclaimable\n",
+				i+1, g.Type, len(g.Files), HumanBytes(g.ReclaimableBytes()))
+		}
+
+		// The dimensions column is dropped when nothing in the group has any.
+		// On a documents scan it would otherwise be a column of question marks
+		// down the whole report, which is worse than no column at all.
+		showDimensions := anyDecodedImage(g.Files)
 
 		tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 		for j, f := range g.Files {
+			// "review", not "delete": clean refuses to act on a related group,
+			// so a column that said delete would be promising something the
+			// tool deliberately will not do.
 			marker := "delete"
+			if g.Type == dedupe.Related {
+				marker = "review"
+			}
 			if j == g.KeepIndex {
 				marker = "KEEP"
 			}
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n",
-				marker,
-				relativeTo(root, f.Path),
-				HumanBytes(f.Size),
-				dimensions(f),
-				f.ModTime.Format("2006-01-02"),
-			)
+			if showDimensions {
+				fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\t%s\n",
+					marker, relativeTo(root, f.Path), HumanBytes(f.Size), dimensions(f), f.ModTime.Format("2006-01-02"))
+			} else {
+				fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n",
+					marker, relativeTo(root, f.Path), HumanBytes(f.Size), f.ModTime.Format("2006-01-02"))
+			}
 		}
 		tw.Flush()
 	}
+}
+
+func anyDecodedImage(files []scanner.FileMeta) bool {
+	for _, f := range files {
+		if f.Decoded && f.Width > 0 && f.Height > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func dimensions(f scanner.FileMeta) string {

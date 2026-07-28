@@ -8,6 +8,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"photocull/internal/dedupe"
+	"photocull/internal/fingerprint"
 	"photocull/internal/report"
 	"photocull/internal/trash"
 )
@@ -62,7 +64,7 @@ func runClean(cmd *cobra.Command, dir string, opts *cleanOptions) error {
 	}
 
 	fmt.Fprintf(out, "Scanning %s ...\n", dir)
-	a, err := analyze(cmd.Context(), dir, opts.global, opts.match)
+	a, err := analyze(cmd, dir, opts.global, opts.match)
 	if err != nil {
 		return err
 	}
@@ -77,11 +79,30 @@ func runClean(cmd *cobra.Command, dir string, opts *cleanOptions) error {
 
 	// Collect the duplicates: everything except the suggested keeper in each
 	// group.
+	//
+	// Related groups are skipped entirely, and this is the security-critical
+	// line in the command. Those files were matched on their name and size
+	// alone, because photocull could not read inside them — that is a hint for
+	// a person, not a finding to act on. Without this check, "clean --confirm
+	// --yes" would recycle files whose only crime was being called something
+	// similar.
 	var toRemove []string
+	skippedRelated := 0
 	for _, g := range a.groups {
+		if g.Type == dedupe.Related {
+			skippedRelated++
+			continue
+		}
 		for _, d := range g.Duplicates() {
 			toRemove = append(toRemove, d.Path)
 		}
+	}
+
+	relatedNote := ""
+	if skippedRelated > 0 {
+		relatedNote = fmt.Sprintf(
+			"\n%d group(s) marked \"related\" are left alone: photocull could not read inside those files and only matched their names and sizes.\nReview them with \"photocull serve %s%s\".\n",
+			skippedRelated, dir, kindFlagFor(opts.global))
 	}
 
 	// Dry run: the default. Show the plan and stop.
@@ -90,6 +111,7 @@ func runClean(cmd *cobra.Command, dir string, opts *cleanOptions) error {
 		fmt.Fprintf(out, "\nThis was a dry run. Nothing was moved.\n")
 		fmt.Fprintf(out, "Re-run with --confirm to move %s to the recycle bin.\n",
 			pluralFiles(len(toRemove)))
+		fmt.Fprint(out, relatedNote)
 		return nil
 	}
 
@@ -117,8 +139,18 @@ func runClean(cmd *cobra.Command, dir string, opts *cleanOptions) error {
 	fmt.Fprintf(out, "\nMoved %s to the recycle bin, freeing about %s.\n",
 		pluralFiles(moved), report.HumanBytes(a.stats.ReclaimedBytes))
 	fmt.Fprintln(out, "They can be restored from the recycle bin if this was a mistake.")
+	fmt.Fprint(out, relatedNote)
 
 	return moveErr
+}
+
+// kindFlagFor echoes back the --kind the user gave, so the suggested command
+// actually reproduces the scan they just ran.
+func kindFlagFor(global *globalFlags) string {
+	if global == nil || global.kind == "" || global.kind == string(fingerprint.Photos) {
+		return ""
+	}
+	return " --kind " + global.kind
 }
 
 // confirmPrompt asks the user to type y/N before anything is moved.

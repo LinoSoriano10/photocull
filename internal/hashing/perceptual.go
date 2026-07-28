@@ -12,6 +12,19 @@ import (
 // distance two hashes can be apart.
 const PerceptualBits = 64
 
+// DefaultPhotoThreshold is the Hamming distance below which two perceptual
+// hashes are treated as the same photo.
+//
+// Out of 64 bits, 8 is the value that in practice catches resized and
+// re-compressed copies while leaving genuinely different photos apart. It sits
+// here beside DefaultTextThreshold so the two can be read against each other:
+// each number belongs to the algorithm whose distance distribution justifies
+// it, and photographs and text are distributed very differently.
+const DefaultPhotoThreshold = 8
+
+// Distance is deliberately shared by both fingerprint kinds. It is safe only
+// because a single scan never mixes them — see scanner.FileMeta.Fingerprint.
+
 // Perceptual reduces an image to a 64-bit fingerprint of what it looks like.
 //
 // Unlike a content hash, this survives resizing, re-compression and format

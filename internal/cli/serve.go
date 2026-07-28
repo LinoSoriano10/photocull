@@ -34,7 +34,7 @@ The server binds to localhost only.`,
 			out := cmd.OutOrStdout()
 
 			fmt.Fprintf(out, "Scanning %s ...\n", args[0])
-			a, err := analyze(cmd.Context(), args[0], global, &match)
+			a, err := analyze(cmd, args[0], global, &match)
 			if err != nil {
 				return err
 			}

@@ -9,14 +9,13 @@ import (
 	"photocull/internal/scanner"
 )
 
-// DefaultThreshold is the Hamming distance below which two photo fingerprints
-// are treated as the same photo.
+// DefaultThreshold is the photo threshold, kept here because that is where the
+// --threshold flag reaches for it. The number and the reasoning behind it live
+// beside the algorithm it belongs to.
 //
-// Out of 64 bits, 8 is the value that in practice catches resized and
-// re-compressed copies while leaving genuinely different photos apart. It is
-// deliberately exposed as --threshold: the right number depends on the
-// library, and the safe move is to review the groups before deleting.
-const DefaultThreshold = 8
+// It is deliberately exposed as a flag: the right value depends on the library,
+// and the safe move is to review the groups before deleting either way.
+const DefaultThreshold = hashing.DefaultPhotoThreshold
 
 // MatchType records why a group's files ended up together.
 type MatchType string
@@ -27,6 +26,12 @@ const (
 	// Similar means the files only look alike: resized, re-compressed or
 	// re-encoded versions of the same photo. These need a human eye.
 	Similar MatchType = "similar"
+
+	// Related means photocull could not read inside these files at all, and is
+	// only pointing out that their names and sizes line up. It is a hint, not a
+	// finding: nothing is pre-selected, clean will not touch them, and they do
+	// not count towards the reclaimable total.
+	Related MatchType = "related"
 )
 
 // Group is a set of files that photocull believes are the same photo.

@@ -30,7 +30,7 @@ Use it first to see what is there, then reach for "photocull clean".`,
 				fmt.Fprintf(out, "Scanning %s ...\n", args[0])
 			}
 
-			a, err := analyze(cmd.Context(), args[0], global, &match)
+			a, err := analyze(cmd, args[0], global, &match)
 			if err != nil {
 				return err
 			}
@@ -48,8 +48,14 @@ Use it first to see what is there, then reach for "photocull clean".`,
 			fmt.Fprintln(out)
 			fmt.Fprint(out, a.stats.Summary())
 
+			// Echo back the flags that shaped this scan, so the suggested
+			// command actually reproduces what the user is looking at.
 			if a.stats.Groups > 0 {
-				fmt.Fprintf(out, "\nRun \"photocull clean %s\" to review and remove them.\n", args[0])
+				extra := kindFlagFor(global)
+				if match.similar {
+					extra += " --similar"
+				}
+				fmt.Fprintf(out, "\nRun \"photocull clean %s%s\" to review and remove them.\n", args[0], extra)
 			}
 			return nil
 		},

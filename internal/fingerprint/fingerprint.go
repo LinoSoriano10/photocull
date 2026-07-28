@@ -15,6 +15,8 @@ import (
 	"io"
 	"sort"
 	"strings"
+
+	"photocull/internal/hashing"
 )
 
 // Kind is a family of files photocull knows how to look inside.
@@ -78,9 +80,56 @@ type Extractor interface {
 	Fingerprint(r io.Reader, in Input) Result
 }
 
+// Defaults are the settings that suit a kind but are policy rather than
+// mechanism: how close is close enough, which copy to suggest keeping, and
+// whether the low-confidence name-and-size pass applies at all.
+//
+// They live beside the extractors for two reasons. Adding a kind then forces
+// someone to decide them rather than inherit whatever photographs happened to
+// need. And the CLI and the web UI both read the answer from here, so the two
+// cannot drift into disagreeing about what --threshold defaults to.
+type Defaults struct {
+	// Threshold is the Hamming distance at which two fingerprints of this kind
+	// are treated as the same thing.
+	Threshold int
+
+	// Strategy names the dedupe keep strategy to suggest.
+	Strategy string
+
+	// Related enables the low-confidence pass that matches files by name and
+	// size when their contents could not be read at all. It is off for photos,
+	// where a file that will not decode is rare and usually just broken, and on
+	// for documents, where unreadable files are ordinary — a scanned PDF, a
+	// legacy .doc, an .mp3 — and their names are the only remaining signal.
+	Related bool
+}
+
+// DefaultsFor returns the policy for a kind. An unknown kind gets the photo
+// settings, which are the conservative choice: no speculative matching.
+func DefaultsFor(k Kind) Defaults {
+	if d, ok := defaults[k]; ok {
+		return d
+	}
+	return defaults[Photos]
+}
+
+var defaults = map[Kind]Defaults{
+	Photos: {
+		Threshold: hashing.DefaultPhotoThreshold,
+		Strategy:  "default",
+		Related:   false,
+	},
+	Docs: {
+		Threshold: hashing.DefaultTextThreshold,
+		Strategy:  "document",
+		Related:   true,
+	},
+}
+
 // extractors is the registry. It is the one place a new kind is added.
 var extractors = map[Kind]Extractor{
 	Photos: imageExtractor{},
+	Docs:   docExtractor{},
 }
 
 // Default is the extractor for callers that do not choose one. Photos came

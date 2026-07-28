@@ -111,3 +111,66 @@ func TestReportJSONRoundTrips(t *testing.T) {
 		t.Errorf("round trip lost data: %+v", back.Stats)
 	}
 }
+
+// TestStatsExcludeRelatedFromTheHeadline is the honest-reporting test.
+//
+// It is tempting to fold related groups into "N files could be removed, freeing
+// X" because it makes the tool look more useful. They are guesses, and a
+// headline built on guesses is a lie that gets acted on.
+func TestStatsExcludeRelatedFromTheHeadline(t *testing.T) {
+	confident := dedupe.Group{
+		Type:      dedupe.Exact,
+		KeepIndex: 0,
+		Files: []scanner.FileMeta{
+			{Path: "a.txt", Size: 1000},
+			{Path: "b.txt", Size: 1000},
+		},
+	}
+	guess := dedupe.Group{
+		Type:      dedupe.Related,
+		KeepIndex: 0,
+		Files: []scanner.FileMeta{
+			{Path: "c.pdf", Size: 5000},
+			{Path: "d.pdf", Size: 5000},
+		},
+	}
+
+	counts := CountGroups([]dedupe.Group{confident, guess})
+
+	if counts.ReclaimableBytes != 1000 {
+		t.Errorf("ReclaimableBytes = %d, want 1000: the related group's bytes were counted as reclaimable", counts.ReclaimableBytes)
+	}
+	if counts.DuplicateFiles != 1 {
+		t.Errorf("DuplicateFiles = %d, want 1: the related group's files were counted as removable", counts.DuplicateFiles)
+	}
+	if counts.Related != 1 || counts.RelatedFiles != 1 || counts.RelatedBytes != 5000 {
+		t.Errorf("related tally = %d groups / %d files / %d bytes, want 1 / 1 / 5000", counts.Related, counts.RelatedFiles, counts.RelatedBytes)
+	}
+	if counts.Exact != 1 {
+		t.Errorf("Exact = %d, want 1: a related group was counted as an exact one", counts.Exact)
+	}
+}
+
+// TestSummaryReportsRelatedSeparately checks the wording as well as the
+// arithmetic: the user has to be told these were not read, not just shown a
+// smaller number.
+func TestSummaryReportsRelatedSeparately(t *testing.T) {
+	s := Stats{
+		FilesScanned:     4,
+		Groups:           2,
+		ExactGroups:      1,
+		DuplicateFiles:   1,
+		ReclaimableBytes: 1000,
+		RelatedGroups:    1,
+		RelatedFiles:     1,
+		RelatedBytes:     5000,
+	}
+
+	got := s.Summary()
+	if !strings.Contains(got, "1 duplicate group") {
+		t.Errorf("summary counts related groups in the duplicate total:\n%s", got)
+	}
+	if !strings.Contains(got, "Nothing is pre-selected") {
+		t.Errorf("summary does not warn that the related groups are unreviewed:\n%s", got)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 
 	"photocull/internal/dedupe"
+	"photocull/internal/fingerprint"
 	"photocull/internal/report"
 	"photocull/internal/scanner"
 )
@@ -18,12 +19,17 @@ import (
 // Options configures one run.
 type Options struct {
 	Root       string
-	Workers    int               // 0 means one worker per CPU core
-	Extensions []string          // empty means imageutil.DefaultExtensions
-	Similar    bool              // also match visually similar photos, not just exact copies
-	Threshold  int               // perceptual distance for --similar (0-64)
-	Strategy   string            // which copy to suggest keeping; "" means "default"
-	Progress   *scanner.Progress // optional; updated live during the scan
+	Workers    int      // 0 means one worker per CPU core
+	Extensions []string // empty means whatever the kind looks at
+
+	// Kind selects what photocull is looking for. Empty means photos, so every
+	// caller written before documents existed keeps working unchanged.
+	Kind string
+
+	Similar   bool              // also match files that are alike, not just identical
+	Threshold int               // fingerprint distance for --similar (0-64)
+	Strategy  string            // which copy to suggest keeping; "" means the kind's default
+	Progress  *scanner.Progress // optional; updated live during the scan
 }
 
 // Analysis is a completed run: the raw scan plus everything derived from it.
@@ -50,9 +56,15 @@ func Run(ctx context.Context, opts Options) (*Analysis, error) {
 		return nil, fmt.Errorf("threshold must be between 0 and 64, got %d", opts.Threshold)
 	}
 
+	extractor, err := resolveKind(opts.Kind)
+	if err != nil {
+		return nil, err
+	}
+	policy := fingerprint.DefaultsFor(extractor.Kind())
+
 	strategy := opts.Strategy
 	if strategy == "" {
-		strategy = "default"
+		strategy = policy.Strategy
 	}
 	keep, err := dedupe.LookupStrategy(strategy)
 	if err != nil {
@@ -68,6 +80,7 @@ func Run(ctx context.Context, opts Options) (*Analysis, error) {
 		Root:       root,
 		Workers:    opts.Workers,
 		Extensions: opts.Extensions,
+		Extractor:  extractor,
 		DeepScan:   opts.Similar,
 		Progress:   opts.Progress,
 	})
@@ -77,15 +90,46 @@ func Run(ctx context.Context, opts Options) (*Analysis, error) {
 
 	var groups []dedupe.Group
 	if opts.Similar {
-		groups = dedupe.GroupSimilar(result.Files, opts.Threshold, keep)
+		// A similarity scan with a zero tolerance would only match fingerprints
+		// that are bit-for-bit equal, which is a stricter and slower version of
+		// what GroupExact already does. Nobody means that, so an unset
+		// threshold resolves to the kind's default here rather than silently
+		// producing an empty result for a caller that forgot to set it.
+		threshold := opts.Threshold
+		if threshold <= 0 {
+			threshold = policy.Threshold
+		}
+		groups = dedupe.GroupSimilar(result.Files, threshold, keep)
 	} else {
 		groups = dedupe.GroupExact(result.Files, keep)
 	}
+
+	// The low-confidence pass runs last, and its groups are appended rather
+	// than merged into the sort. Confident groups come first whatever their
+	// size: burying a certain 4 GB exact group beneath a speculative 8 GB
+	// related one would be exactly backwards for somebody reviewing by eye.
+	//
+	// Composition lives here rather than in dedupe, so that package stays free
+	// of any knowledge about documents.
+	if policy.Related {
+		groups = append(groups, dedupe.GroupRelated(result.Files, dedupe.PathsIn(groups), keep)...)
+	}
+
+	stats := report.Build(result, groups)
+	stats.Kind = string(extractor.Kind())
 
 	return &Analysis{
 		Root:   root,
 		Result: result,
 		Groups: groups,
-		Stats:  report.Build(result, groups),
+		Stats:  stats,
 	}, nil
+}
+
+// resolveKind turns a --kind value into an extractor.
+func resolveKind(kind string) (fingerprint.Extractor, error) {
+	if kind == "" {
+		return fingerprint.Default(), nil
+	}
+	return fingerprint.Lookup(kind)
 }

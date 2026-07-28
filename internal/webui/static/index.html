@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>photocull</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Launcher view: pick a mode and a folder -->
+  <section id="launcher" class="launcher hidden">
+    <div class="card">
+      <h1>photocull</h1>
+      <p class="muted">Find and remove duplicate photos — safely. Nothing is ever deleted permanently.</p>
+
+      <h2>1. Choose a mode</h2>
+      <div class="modes">
+        <label class="mode">
+          <input type="radio" name="mode" value="exact" checked>
+          <span class="mode-body">
+            <b>Find exact duplicates</b>
+            <span class="muted">Byte-for-byte identical files. Fast, zero false positives.</span>
+          </span>
+        </label>
+        <label class="mode">
+          <input type="radio" name="mode" value="similar">
+          <span class="mode-body">
+            <b>Find exact + similar</b>
+            <span class="muted">Also resized, re-compressed or re-encoded copies (incl. HEIC). Review by eye.</span>
+          </span>
+        </label>
+        <label class="mode">
+          <input type="radio" name="mode" value="merge">
+          <span class="mode-body">
+            <b>Add new photos to a library</b>
+            <span class="muted">Copy into a library only the photos from another folder that it doesn't already have.</span>
+          </span>
+        </label>
+      </div>
+
+      <div id="threshold-row" class="threshold hidden">
+        <label for="threshold">Similarity strictness</label>
+        <input type="range" id="threshold" min="2" max="16" value="8">
+        <span class="muted"><span id="threshold-val">8</span> / 64 — lower is stricter</span>
+      </div>
+
+      <!-- Single folder: exact / similar modes -->
+      <div id="single-folder">
+        <h2>2. Choose a folder</h2>
+        <div class="folder-row">
+          <input type="text" id="folder" placeholder="e.g. F:\Fotos_Rescatadas — type or paste a path">
+          <button class="secondary browse-btn" type="button" data-target="folder">Browse…</button>
+        </div>
+      </div>
+
+      <!-- Two folders: add-to-library mode -->
+      <div id="double-folder" class="hidden">
+        <h2>2. Your library <span class="muted">(kept — only added to)</span></h2>
+        <div class="folder-row">
+          <input type="text" id="base-folder" placeholder="e.g. D:\Photos — your main library">
+          <button class="secondary browse-btn" type="button" data-target="base-folder">Browse…</button>
+        </div>
+        <h2>3. New photos to bring in <span class="muted">(never modified)</span></h2>
+        <div class="folder-row">
+          <input type="text" id="source-folder" placeholder="e.g. E:\PhoneDump — folder with new photos">
+          <button class="secondary browse-btn" type="button" data-target="source-folder">Browse…</button>
+        </div>
+      </div>
+
+      <p id="launch-error" class="error hidden"></p>
+
+      <button id="start" class="primary">Scan for duplicates</button>
+    </div>
+  </section>
+
+  <!-- Scanning progress -->
+  <section id="scanning" class="scanning hidden">
+    <div class="scan-card">
+      <div class="spinner"></div>
+      <h2 id="scan-phase">Scanning…</h2>
+      <p class="muted scan-path" id="scanning-path"></p>
+      <div class="progress"><div class="progress-bar" id="progress-bar"></div></div>
+      <div class="scan-stats" id="scan-stats"></div>
+      <button id="cancel-scan" class="secondary">Cancel</button>
+    </div>
+  </section>
+
+  <!-- Review view -->
+  <section id="review" class="hidden">
+    <header>
+      <div class="review-top">
+        <h1>photocull</h1>
+        <button id="back" class="secondary">← Scan another folder</button>
+      </div>
+      <p id="root" class="muted"></p>
+      <div id="stats" class="stats"></div>
+      <div class="toolbar">
+        <button id="delete-selected" disabled>Move ticked photos to recycle bin</button>
+        <span id="selection-count" class="muted"></span>
+      </div>
+      <p class="hint muted">
+        Each group below is one set of photos that look alike. Compare them —
+        click any photo to see it full size — then tick the ones to remove.
+        Nothing is deleted until you press the button above, and even then it
+        only goes to the recycle bin.
+      </p>
+    </header>
+    <main id="groups"></main>
+  </section>
+
+  <!-- Add-to-library review: the photos not already in the library -->
+  <section id="merge-review" class="hidden">
+    <header>
+      <div class="review-top">
+        <h1>photocull</h1>
+        <button id="merge-back" class="secondary">← Start over</button>
+      </div>
+      <p id="merge-summary" class="stats"></p>
+      <div class="toolbar">
+        <button id="copy-selected" disabled>Copy ticked photos into library</button>
+        <span id="merge-selection-count" class="muted"></span>
+      </div>
+      <p class="hint muted">
+        These photos are not in your library. Click any to see it full size, tick
+        the ones to add, and press the button. They are copied into a
+        "<span id="import-subdir">photocull_added</span>" folder inside your
+        library — your originals are never moved.
+      </p>
+    </header>
+    <main id="merge-gallery" class="files"></main>
+  </section>
+
+  <!-- Copy-done panel -->
+  <section id="merge-done" class="scanning hidden">
+    <div class="scan-card">
+      <h2 id="merge-done-title">Done</h2>
+      <p id="merge-done-msg" class="muted"></p>
+      <button id="merge-done-ok" class="primary">Back to start</button>
+    </div>
+  </section>
+
+  <!-- Full-size comparison overlay -->
+  <div id="lightbox" class="lightbox hidden">
+    <img id="lightbox-img" alt="">
+    <p id="lightbox-caption"></p>
+    <span class="lightbox-close">Click anywhere to close · Esc</span>
+  </div>
+
+  <template id="group-template">
+    <section class="group">
+      <h2 class="group-head"></h2>
+      <p class="group-hint muted"></p>
+      <div class="files"></div>
+    </section>
+  </template>
+
+  <template id="file-template">
+    <figure class="file">
+      <div class="thumb-wrap" role="button" tabindex="0" title="Click to view full size">
+        <span class="ord"></span>
+        <img loading="lazy" alt="" class="thumb">
+        <span class="zoom">⤢</span>
+      </div>
+      <figcaption>
+        <span class="badge"></span>
+        <span class="name"></span>
+        <span class="meta muted"></span>
+        <label class="del"><input type="checkbox" class="pick"> <span class="del-text">Move to recycle bin</span></label>
+      </figcaption>
+    </figure>
+  </template>
+
+  <script src="app.js"></script>
+</body>
+</html>

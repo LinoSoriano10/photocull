@@ -1,0 +1,54 @@
+package cli
+
+import (
+	"fmt"
+
+	"github.com/spf13/cobra"
+
+	"photocull/internal/trash"
+	"photocull/internal/webui"
+)
+
+func newServeCmd(global *globalFlags) *cobra.Command {
+	var (
+		match   matchFlags
+		port    int
+		host    string
+		browser bool
+	)
+
+	cmd := &cobra.Command{
+		Use:   "serve <directory>",
+		Short: "Review duplicates visually in a local web page",
+		Long: `Serve scans a directory and opens a small local web page for reviewing the
+duplicates by eye before deleting them.
+
+This is the safe way to handle "similar" matches, where a thumbnail tells you
+in a glance what a file path cannot. Selected photos are moved to the recycle
+bin, never deleted permanently.
+
+The server binds to localhost only.`,
+		Args:         cobra.ExactArgs(1),
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			out := cmd.OutOrStdout()
+
+			fmt.Fprintf(out, "Scanning %s ...\n", args[0])
+			a, err := analyze(cmd.Context(), args[0], global, &match)
+			if err != nil {
+				return err
+			}
+			fmt.Fprint(out, a.stats.Summary())
+
+			srv := webui.New(a.root, a.groups, a.stats, trash.SystemBin{})
+			return runApp(cmd.Context(), out, srv, host, port, browser)
+		},
+	}
+
+	match.register(cmd)
+	cmd.Flags().IntVar(&port, "port", 8080, "port to serve the review page on")
+	cmd.Flags().StringVar(&host, "host", "127.0.0.1", "address to bind to (localhost by default)")
+	cmd.Flags().BoolVar(&browser, "browser", false, "open in the web browser instead of a native window")
+
+	return cmd
+}

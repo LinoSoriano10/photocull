@@ -1,0 +1,9 @@
+# Normalise line endings: LF in the repo, regardless of the OS checking out.
+* text=auto eol=lf
+
+# Treat committed test images as binary so git never mangles them.
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.gif binary
+*.heic binary

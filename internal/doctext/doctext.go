@@ -52,7 +52,7 @@ const (
 // That is deliberate: a .zip or an .mp3 nobody can parse still has to be
 // deduplicated, or the scan has blind spots exactly where the user assumed
 // photocull was looking.
-var DefaultExtensions = []string{".docx", ".xlsx", ".pptx", ".txt", ".md", ".csv"}
+var DefaultExtensions = []string{".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".md", ".csv"}
 
 // Reasons a document yielded nothing usable. They are shown to the user, so
 // they are phrased for one.
@@ -61,6 +61,7 @@ const (
 	ReasonTooLarge    = "too large to read"
 	ReasonThin        = "not enough text to compare"
 	ReasonEmpty       = "no text found inside"
+	ReasonScanned     = "this PDF looks like a scan, with little or no real text"
 )
 
 // errBomb is returned when a container claims to hold more than MaxText.
@@ -122,6 +123,17 @@ func Extract(r io.Reader, path string) (Extraction, error) {
 		text, err = decodeText(data)
 	case ".docx", ".xlsx", ".pptx":
 		text, err = extractOOXML(data, ext)
+	case ".pdf":
+		text, err = extractPDF(data)
+		// A PDF is the one format that is routinely valid and yet holds no text
+		// whatsoever, so it gets its own verdict instead of the generic one.
+		// Two shapes mean the same thing. Nothing came out at all: a photograph
+		// of a page. Or so little came out relative to the file's size that what
+		// did is a watermark rather than the document — see pdfTextIsThin, which
+		// is deliberately not applied to the other formats.
+		if err == nil && (strings.TrimSpace(text) == "" || pdfTextIsThin(text, len(data))) {
+			return Extraction{Reason: ReasonScanned}, nil
+		}
 	default:
 		return Extraction{Reason: ReasonUnsupported}, nil
 	}

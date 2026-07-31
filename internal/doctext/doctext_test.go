@@ -350,8 +350,12 @@ func TestClassifyRejectsThinText(t *testing.T) {
 
 func TestHandlesKnownExtensions(t *testing.T) {
 	cases := map[string]bool{
-		"notes.txt":   true,
-		"NOTES.TXT":   true,
+		"notes.txt": true,
+		"NOTES.TXT": true,
+		// Dropping .pdf from DefaultExtensions is the whole rollback for PDF
+		// support: every PDF then falls back to the content-hash-and-related
+		// path it took before, with no other change anywhere.
+		"report.pdf":  true,
 		"memo.docx":   true,
 		"book.xlsx":   true,
 		"deck.pptx":   true,

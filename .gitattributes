@@ -1,6 +1,14 @@
 # Normalise line endings: LF in the repo, regardless of the OS checking out.
 * text=auto eol=lf
 
+# ...except the Windows launcher. cmd.exe reads a batch file line by line off
+# disk as it runs it, and with LF-only endings the trailing CR-less lines make
+# it mis-parse labels and parenthesised blocks — so the rule above would ship a
+# launcher that is broken for everyone who clones on Windows, which is the only
+# platform that runs it.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
 # Treat committed test images as binary so git never mangles them.
 *.jpg binary
 *.jpeg binary

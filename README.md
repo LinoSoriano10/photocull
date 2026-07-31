@@ -25,6 +25,14 @@ I could have reached for an existing dedup tool. Instead I built the one I wante
 
 ## Install
 
+### Windows — clone and double-click
+
+Double-click **`run-photocull.cmd`** in the repository root. That is the whole setup: it builds the binary if there isn't one yet (Go 1.26+ needed for that first run, nothing after) and opens the app window.
+
+Use the launcher rather than double-clicking `photocull.exe` directly — [A note on antivirus](#a-note-on-antivirus) explains why that matters more than it ought to.
+
+### Everywhere else
+
 ```sh
 # From source (Go 1.26+)
 go install ./cmd/photocull
@@ -36,12 +44,14 @@ go install ./cmd/photocull
 
 ### Just run it — the app
 
-Double-click `photocull.exe` (or run it with no arguments). It opens a native window (WebView2 on Windows; falls back to the browser if that runtime is missing) where you **pick a mode and a folder**, then review and act — no command line needed. A native folder picker is one click away.
+Run photocull with no arguments — on Windows, double-click `run-photocull.cmd`. It opens a native window (WebView2 on Windows; falls back to the browser if that runtime is missing) where you **pick a mode and a folder**, then review and act — no command line needed. A native folder picker is one click away.
 
 ```sh
 photocull              # opens the app window
 photocull --browser    # force the browser instead of a native window
 ```
+
+The launcher forwards its arguments, so `run-photocull.cmd --browser` works the same way.
 
 The three commands below are the same duplicate-finding functionality from the terminal.
 
@@ -100,6 +110,7 @@ Within a group, photocull suggests keeping the highest-resolution copy, breaking
 ## Project layout
 
 ```
+run-photocull.cmd    Windows launcher: builds if needed, then opens the app
 cmd/photocull        entry point
 internal/scanner     concurrent walk + fingerprinting
 internal/hashing     SHA-256 and perceptual hashing
@@ -120,6 +131,16 @@ go test ./... -race -cover
 ```
 
 The test suite runs entirely offline against small synthetic fixtures and **never touches the real recycle bin** — deletion is tested through an injected fake. Coverage of the core logic (grouping, hashing, scanning, the web API) sits above 87%, including the security guard that stops the review server from serving any file outside the scanned set. CI additionally cross-compiles for Windows, Linux and macOS with `CGO_ENABLED=0`, which is what keeps the single-binary promise honest.
+
+## A note on antivirus
+
+On Windows, double-clicking `photocull.exe` may do nothing whatsoever — no window, no error, no crash dialog. The binary is not broken. It is being killed.
+
+A security suite scores the *context* a program is launched in, not only the file itself. `explorer.exe` → unsigned executable → binds a local port is the shape of the commonest malware delivery path there is, and photocull matches it exactly: unsigned, freshly built, and the very first thing it does is listen on `127.0.0.1:8080` to serve its own interface. Measured on a machine running McAfee, the process starts, never gets as far as opening that port, and is terminated about five seconds in. The app is a `-H=windowsgui` build, so it has no console and nothing is printed anywhere.
+
+`run-photocull.cmd` sidesteps this by putting `cmd.exe` in the chain instead, which is scored differently. Verified on that machine, same binary, minutes apart: launched by Explorer it dies at ~5 s having bound nothing; launched from the `.cmd` the window is up in well under a second. A renamed copy in a different folder failed identically, so this is about the launch path rather than one file's reputation.
+
+It is a workaround, not a fix. The fixes are an antivirus exclusion for the folder, or an Authenticode-signed binary — and the reason a portable, unsigned tool ships with a launcher instead of just an `.exe` is worth knowing before you distribute one of your own.
 
 ## Notes
 

@@ -30,7 +30,7 @@ The name stayed. `photocull` doing documents is a mild misnomer, but renaming wo
 
 - **Exact duplicates** — byte-for-byte identical files, found by SHA-256. Zero false positives; safe to remove on sight.
 - **Similar photos** — the same image after resizing, re-compression or format conversion, found by a perceptual hash and grouped by visual distance.
-- **HEIC/HEIF** — iPhone photos are decoded and matched alongside JPEG/PNG/GIF, so a HEIC and its JPEG export land in the same group. No system libraries required (libheif runs as WebAssembly).
+- **HEIC/HEIF** — iPhone photos are decoded and matched alongside JPEG/PNG/GIF, so a HEIC and its JPEG export land in the same group. No system libraries required: the decoder is compiled to WebAssembly and run in-process. It is also the reason photocull is AGPL — see [License](#license).
 - **Four ways to compare a pair** — side by side with synchronised zoom, a draggable wipe, a blink that alternates the two in place, and a server-rendered difference map. Each catches something the others miss; the blink in particular finds changes the eye cannot describe.
 
 **For documents**
@@ -160,6 +160,27 @@ Keeping the oldest document would mean suggesting you keep the draft and bin the
 
 **Safe deletion.** Removal always goes through the OS recycle bin (Shell32 on Windows, the FreeDesktop trash spec on Linux). There is no code path that deletes without an explicit human action in that same run.
 
+## Security
+
+photocull reviews files by running a small HTTP server on your own machine and pointing a window at it. That is a normal design for a desktop app and it has a well-known failure mode, so the threat model is worth stating plainly.
+
+**What the server defends against.** Any page you have open in a browser can send requests to `127.0.0.1`. Without checks, a hostile page could ask a running photocull for its report — which is a list of every file path on the drive you scanned — or tell it to move files to the recycle bin. Four independent checks, in [`internal/webui/guard.go`](internal/webui/guard.go), each enough on its own:
+
+| Check | Stops |
+|---|---|
+| `Host` must be a loopback name on the port in use | **DNS rebinding** — a domain re-pointed at `127.0.0.1`, which defeats the browser's same-origin policy but still arrives with the attacker's `Host` |
+| A 128-bit per-run token, handed over once and stored in a `SameSite=Strict; HttpOnly` cookie | any request that did not come from the window photocull opened; `Strict` means the browser never attaches it cross-site, and `HttpOnly` keeps script from reading it |
+| `Origin`, when present, must be our own | cross-origin `fetch` |
+| `POST` must be `application/json` | the `enctype="text/plain"` form trick, which needs no preflight and which Go's JSON decoder would otherwise accept because it ignores trailing bytes |
+
+The token is new on every run and the port is picked fresh by the OS, so a bookmarked URL from a previous session fails closed — with a page that explains why rather than a blank 401.
+
+**And beyond the guard.** Only files that were part of the current scan can be served or deleted; a crafted `?path=` reaches nothing else, which is what [`TestThumbnailRejectsPathTraversal`](internal/webui/server_test.go) exists to keep true. Deletion always goes through the OS recycle bin. Nothing is ever sent off the machine — photocull makes no network requests at all.
+
+**What is out of scope.** Nothing here protects you from someone who already has a session on your machine: they can read the files directly and do not need photocull's help. `--host` refuses any non-loopback address unless you also pass `--allow-remote`, which serves your files to the local network with no password and says so in the flag's own description. Do not use it on a network you do not control.
+
+**Supply chain.** CI runs [`govulncheck`](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck) and `staticcheck` on every push alongside the race detector and the cross-compiles, and Dependabot watches both the Go modules and the Actions. This is not decoration: `govulncheck` found a denial-of-service bug in the version of `golang.org/x/text` that `doctext` was feeding arbitrary user files through, which is exactly the shape of dependency risk a file-scanning tool carries.
+
 ## Project layout
 
 ```
@@ -188,7 +209,7 @@ go test ./... -race -cover
 
 The test suite runs entirely offline against small fixtures and **never touches the real recycle bin** — deletion is tested through an injected fake.
 
-Coverage of the packages that decide what counts as a duplicate runs from 85% to 96%: `hashing` 96%, `textdiff` 93%, `report` 91%, `fingerprint` 91%, `dedupe` 89%, `scanner` 88%, `doctext` 87%, `pipeline` 86%. The review server sits at 84%, which includes the security guard that stops it serving any file outside the scanned set. `cli` is thin argument wiring at 33%, and the two lowest — `imageutil` at 72% and `trash` at 60% — are the packages whose remaining lines need a real image codec or a real recycle bin to reach.
+Coverage of the packages that decide what counts as a duplicate runs from 87% to 98%: `hashing` 98%, `textdiff` 93%, `imageutil` 93%, `report` 91%, `fingerprint` 91%, `dedupe` 90%, `scanner` 88%, `doctext` 87%, `pipeline` 87%. The review server sits at 87%, which includes both the guard described under [Security](#security) and the rule that stops it serving any file outside the scanned set. `cli` is thin argument wiring at 40%, and `trash` at 60% is the package whose remaining lines need a real recycle bin to reach.
 
 CI additionally cross-compiles for Windows, Linux and macOS with `CGO_ENABLED=0`, which is what keeps the single-binary promise honest, and runs the suite under `-race` (there is no C compiler on the machine this was written on, so that check only ever happens there).
 
@@ -216,3 +237,15 @@ It is a workaround, not a fix. The fixes are an antivirus exclusion for the fold
 - Module path is `photocull`; rename to `github.com/<you>/photocull` when publishing.
 - `--kind docs` pointed at a whole drive will SHA-256 everything on it, including a 40 GB VM image. There is no `--max-size`, on purpose: skipping files would break the guarantee that `exact` means exact. System directories (`windows`, `program files`, `appdata`, `node_modules` and friends) are skipped, and zero-byte files are ignored so every empty `.log` on the disk does not form one enormous "identical" group.
 - Document text is compared as extracted, not as rendered. A `.docx` against its PDF export will show page numbers and hyphenation as differences; they are not changes to the content.
+
+## License
+
+**GNU Affero General Public License, version 3** — the full text is in [LICENSE](LICENSE).
+
+You may use, study, modify and redistribute photocull, including commercially. The condition is reciprocity: anything you distribute that is built from this code has to be offered under the same license, with its source. The Affero part extends that to network use — if you modify photocull and let other people reach it over a network, those users are entitled to your source too, which for a tool that serves its own web interface is a clause worth reading rather than skimming.
+
+**Version 3 exactly, not "or later."** That is unusual and it is not an oversight. photocull embeds a HEIC decoder that is licensed AGPL-3.0-**only**, and a combined work can be conveyed under no more and no less than the terms every part of it allows.
+
+That decoder is also the whole reason for the license. The chain is worth knowing if you are picking dependencies for anything of your own: `github.com/gen2brain/heic` is MIT, and reads as an unremarkable choice, but it `go:embed`s a WebAssembly build of a Rust crate that is AGPL-3.0-only — an obligation that is invisible in `go.mod`, invisible in the module's own license file, and present in the shipped binary. This project started out intending a noncommercial license and changed to the AGPL once that was traced. [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) has the details, the audit that found it, and every other library's notice.
+
+Copyright (C) 2026 Lino Soriano.

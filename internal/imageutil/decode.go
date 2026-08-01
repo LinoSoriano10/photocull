@@ -15,8 +15,15 @@ import (
 	_ "image/png"
 
 	// HEIC/HEIF is what iPhones save by default, so a photo library without it
-	// is missing half the collection. This decoder is CGo-free (it runs libheif
-	// compiled to WebAssembly), which keeps photocull a single static binary.
+	// is missing half the collection. This decoder is CGo-free — it embeds a
+	// HEVC decoder compiled to WebAssembly and runs it in-process — which is
+	// what keeps photocull a single static binary with no system libraries.
+	//
+	// It is also the most consequential dependency in the tree, and not for a
+	// technical reason. The embedded WebAssembly is Imazen's Rust decoder,
+	// which is AGPL-3.0-only, so it sets the license for the whole binary.
+	// THIRD-PARTY-NOTICES.md explains it; removing this one import would take
+	// wazero and purego with it and free photocull to be licensed as it liked.
 	_ "github.com/gen2brain/heic"
 )
 

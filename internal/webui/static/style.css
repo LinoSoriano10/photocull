@@ -12,8 +12,14 @@
 
 * { box-sizing: border-box; }
 
+/* A flex column so the license notice can sit at the bottom of the viewport on
+   the short screens and after the content on the long ones. The alternative,
+   a fixed footer, would cover the last row of a full gallery. */
 body {
   margin: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
   font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   background: var(--bg);
   color: var(--text);
@@ -190,8 +196,11 @@ figcaption { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
 .hidden { display: none !important; }
 
 /* ---- Launcher ---- */
+/* flex: 1 rather than min-height: 100vh — these fill whatever the footer left
+   of the viewport, instead of claiming all of it and pushing the license
+   notice off the bottom of a screen that had room for both. */
 .launcher {
-  min-height: 100vh;
+  flex: 1;
   display: grid;
   place-items: center;
   padding: 24px;
@@ -245,7 +254,7 @@ button.secondary { background: var(--panel-2); color: var(--text); border: 1px s
 .error { color: var(--danger); margin-top: 14px; }
 
 /* ---- Scanning ---- */
-.scanning { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+.scanning { flex: 1; display: grid; place-items: center; padding: 24px; }
 .scan-card {
   width: min(520px, 100%);
   background: var(--panel);
@@ -519,6 +528,20 @@ button.secondary { background: var(--panel-2); color: var(--text); border: 1px s
 
 .viewer-foot { display: flex; align-items: center; justify-content: center; gap: 14px; }
 #viewer-pos { color: #b9bfc9; font-size: 13px; }
+
+/* The AGPL source offer. Quiet enough to ignore while working, present on
+   every screen because the license does not carve out the busy ones. */
+#license-notice {
+  margin-top: auto;
+  padding: 12px 24px 14px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 11px;
+  text-align: center;
+}
+
+#license-notice a { color: var(--muted); }
+#license-notice a:hover { color: var(--accent); }
 
 @media (max-width: 760px) {
   .stage-pane.side { flex-direction: column; }

@@ -45,11 +45,7 @@ func Execute() error {
 
 func newRootCmd() *cobra.Command {
 	global := &globalFlags{}
-	var (
-		port    int
-		host    string
-		browser bool
-	)
+	var serve serveOptions
 
 	root := &cobra.Command{
 		Use:   "photocull",
@@ -83,7 +79,7 @@ serve commands directly.`,
 			out := cmd.OutOrStdout()
 			fmt.Fprintln(out, "Starting photocull - pick a folder and mode in the window that opens.")
 			srv := webui.NewLauncher(trash.SystemBin{})
-			return runApp(cmd.Context(), out, srv, host, port, browser)
+			return runApp(cmd.Context(), out, srv, serve)
 		},
 	}
 
@@ -99,9 +95,7 @@ serve commands directly.`,
 	root.PersistentFlags().StringSliceVar(&global.extensions, "ext", nil,
 		"file extensions to scan (default: photo formats; with --kind docs, every file)")
 
-	root.Flags().IntVar(&port, "port", 8080, "port for the launcher web page")
-	root.Flags().StringVar(&host, "host", "127.0.0.1", "address to bind the launcher to")
-	root.Flags().BoolVar(&browser, "browser", false, "open in the web browser instead of a native window")
+	serve.register(root.Flags())
 
 	root.AddCommand(
 		newScanCmd(global),

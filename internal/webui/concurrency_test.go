@@ -25,7 +25,7 @@ func TestScanStatusIsSafeUnderConcurrentPolling(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if code := startScan(s, scanRequest{Path: root, Similar: true, Threshold: 8}); code != http.StatusAccepted {
+	if code := startScan(t, s, scanRequest{Path: root, Similar: true, Threshold: 8}); code != http.StatusAccepted {
 		t.Fatalf("start scan: status %d", code)
 	}
 
@@ -37,7 +37,7 @@ func TestScanStatusIsSafeUnderConcurrentPolling(t *testing.T) {
 			defer wg.Done()
 			for range 50 {
 				rec := httptest.NewRecorder()
-				s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/scan/status", nil))
+				bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/scan/status", nil))
 
 				var st scanStatus
 				if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
@@ -51,7 +51,7 @@ func TestScanStatusIsSafeUnderConcurrentPolling(t *testing.T) {
 				// fetches it the moment it sees this flag.
 				if st.Done {
 					rep := httptest.NewRecorder()
-					s.Handler().ServeHTTP(rep, httptest.NewRequest(http.MethodGet, "/api/report", nil))
+					bound(t, s).ServeHTTP(rep, httptest.NewRequest(http.MethodGet, "/api/report", nil))
 					var payload reportPayload
 					if err := json.Unmarshal(rep.Body.Bytes(), &payload); err == nil && !payload.Loaded {
 						t.Error("the scan reported done but no report was loaded yet; a page polling status would render the previous scan")
@@ -67,7 +67,7 @@ func TestScanStatusIsSafeUnderConcurrentPolling(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for range 50 {
-			startScan(s, scanRequest{Path: root})
+			startScan(t, s, scanRequest{Path: root})
 		}
 	}()
 

@@ -29,6 +29,30 @@ jobs:
       - name: Test
         run: go test ./... -race -cover
 
+  # A published binary is only as trustworthy as what it links. This job is the
+  # answer to "is anything in here known to be broken?" — govulncheck matches
+  # the module graph and the toolchain against Go's vulnerability database, and
+  # reports only what the code actually reaches, so a hit is a real hit.
+  # staticcheck catches the class of mistake vet is not looking for.
+  analyse:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Vulnerability check
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - name: Staticcheck
+        run: |
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
+
   # The single-binary promise only holds if the whole tree compiles without a C
   # toolchain. This job fails loudly the moment a cgo dependency sneaks in.
   cross-compile:

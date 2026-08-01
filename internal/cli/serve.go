@@ -11,10 +11,8 @@ import (
 
 func newServeCmd(global *globalFlags) *cobra.Command {
 	var (
-		match   matchFlags
-		port    int
-		host    string
-		browser bool
+		match matchFlags
+		serve serveOptions
 	)
 
 	cmd := &cobra.Command{
@@ -46,14 +44,12 @@ The server binds to localhost only.`,
 			fmt.Fprint(out, a.stats.Summary())
 
 			srv := webui.New(a.root, a.groups, a.stats, trash.SystemBin{})
-			return runApp(cmd.Context(), out, srv, host, port, browser)
+			return runApp(cmd.Context(), out, srv, serve)
 		},
 	}
 
 	match.register(cmd)
-	cmd.Flags().IntVar(&port, "port", 8080, "port to serve the review page on")
-	cmd.Flags().StringVar(&host, "host", "127.0.0.1", "address to bind to (localhost by default)")
-	cmd.Flags().BoolVar(&browser, "browser", false, "open in the web browser instead of a native window")
+	serve.register(cmd.Flags())
 
 	return cmd
 }

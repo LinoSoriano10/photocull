@@ -56,6 +56,12 @@ type Server struct {
 	groups []dedupe.Group
 	stats  report.Stats
 
+	// token and port are the session, set once by Bind before the server starts
+	// serving. Until they are set, guard refuses every request — a server that
+	// does not know its own address cannot check anybody else's. See guard.go.
+	token string
+	port  string
+
 	// allowed is the set of absolute file paths the UI may READ (thumbnails and
 	// previews). deletable is the subset it may move to the recycle bin. They
 	// are separate because "add to library" needs to show source photos without
@@ -191,5 +197,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/merge/result", s.handleMergeResult)
 	mux.HandleFunc("/api/merge/copy", s.handleMergeCopy)
 
-	return mux
+	// Everything goes through the guard. Wrapping the mux rather than each
+	// route is the point: a handler added later is protected by default, and
+	// forgetting to protect one is the mistake this shape makes impossible.
+	return s.guard(mux)
 }

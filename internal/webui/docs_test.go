@@ -56,7 +56,7 @@ func scannedDocs(t *testing.T) (*Server, reportPayload) {
 	t.Helper()
 	s := launcherServer()
 
-	if code := startScan(s, scanRequest{Path: docsDir(t), Kind: "docs", Similar: true}); code != http.StatusAccepted {
+	if code := startScan(t, s, scanRequest{Path: docsDir(t), Kind: "docs", Similar: true}); code != http.StatusAccepted {
 		t.Fatalf("scan start = %d, want 202", code)
 	}
 	if st := waitForScan(t, s); st.Error != "" {
@@ -139,7 +139,7 @@ func TestSnippetServesScannedDocument(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/snippet?path="+url.QueryEscape(target), nil))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/snippet?path="+url.QueryEscape(target), nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -166,7 +166,7 @@ func TestSnippetTruncatesToTheRequestedLength(t *testing.T) {
 
 	for _, n := range []string{"40", "999999999"} {
 		rec := httptest.NewRecorder()
-		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
 			"/api/snippet?path="+url.QueryEscape(target)+"&n="+n, nil))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("n=%s: status = %d, want 200", n, rec.Code)
@@ -199,7 +199,7 @@ func TestSnippetRefusesFileWithoutText(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/snippet?path="+url.QueryEscape(target), nil))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/snippet?path="+url.QueryEscape(target), nil))
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Errorf("status = %d, want 422", rec.Code)
 	}
@@ -209,7 +209,7 @@ func TestSnippetRefusesFileWithoutText(t *testing.T) {
 func compareVia(t *testing.T, s *Server, a, b string) comparison {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
 		"/api/compare?a="+url.QueryEscape(a)+"&b="+url.QueryEscape(b), nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("compare status = %d, want 200", rec.Code)
@@ -274,7 +274,7 @@ func TestCompareIdenticalDocumentsSaysSo(t *testing.T) {
 	copyFixture(t, src, filepath.Join(dir, "backup", "report.txt"))
 
 	s := launcherServer()
-	if code := startScan(s, scanRequest{Path: dir, Kind: "docs"}); code != http.StatusAccepted {
+	if code := startScan(t, s, scanRequest{Path: dir, Kind: "docs"}); code != http.StatusAccepted {
 		t.Fatalf("scan start = %d, want 202", code)
 	}
 	if st := waitForScan(t, s); st.Error != "" {
@@ -333,7 +333,7 @@ func TestCompareFollowsTheScanNotTheFile(t *testing.T) {
 	copyFixture(t, src, filepath.Join(dir, "backup", "photo.jpg"))
 
 	s := launcherServer()
-	if code := startScan(s, scanRequest{Path: dir, Kind: "docs"}); code != http.StatusAccepted {
+	if code := startScan(t, s, scanRequest{Path: dir, Kind: "docs"}); code != http.StatusAccepted {
 		t.Fatalf("scan start = %d, want 202", code)
 	}
 	if st := waitForScan(t, s); st.Error != "" {
@@ -363,7 +363,7 @@ func TestSnippetRejectsPathTraversal(t *testing.T) {
 	}
 	for _, u := range attempts {
 		rec := httptest.NewRecorder()
-		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, u, nil))
+		bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, u, nil))
 		if rec.Code == http.StatusOK {
 			t.Errorf("%s was served (status 200); it must be refused", u)
 		}
@@ -381,7 +381,7 @@ func TestScanWithoutKindStaysOnPhotos(t *testing.T) {
 	copyFixture(t, filepath.Join("..", "..", "testdata", "docs", "text", "report.txt"), filepath.Join(dir, "report.txt"))
 
 	s := launcherServer()
-	if code := startScan(s, scanRequest{Path: dir}); code != http.StatusAccepted {
+	if code := startScan(t, s, scanRequest{Path: dir}); code != http.StatusAccepted {
 		t.Fatalf("scan start = %d, want 202", code)
 	}
 	if st := waitForScan(t, s); st.Error != "" {
@@ -402,7 +402,7 @@ func TestScanRejectsUnknownKind(t *testing.T) {
 	s := launcherServer()
 	dir, _ := filepath.Abs("../../testdata/exact")
 
-	if code := startScan(s, scanRequest{Path: dir, Kind: "spreadsheets"}); code != http.StatusAccepted {
+	if code := startScan(t, s, scanRequest{Path: dir, Kind: "spreadsheets"}); code != http.StatusAccepted {
 		t.Fatalf("scan start = %d, want 202", code)
 	}
 	st := waitForScan(t, s)
@@ -419,7 +419,7 @@ func TestDocsThresholdDefaultsToTheDocumentPolicy(t *testing.T) {
 	s := launcherServer()
 	dir := docsDir(t)
 
-	if code := startScan(s, scanRequest{Path: dir, Kind: "docs", Similar: true}); code != http.StatusAccepted {
+	if code := startScan(t, s, scanRequest{Path: dir, Kind: "docs", Similar: true}); code != http.StatusAccepted {
 		t.Fatalf("scan start = %d, want 202", code)
 	}
 	if st := waitForScan(t, s); st.Error != "" {

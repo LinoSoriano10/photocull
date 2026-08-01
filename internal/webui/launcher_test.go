@@ -22,10 +22,11 @@ func launcherServer() *Server {
 }
 
 // startScan posts a scan request and returns the HTTP status code.
-func startScan(s *Server, req scanRequest) int {
+func startScan(t *testing.T, s *Server, req scanRequest) int {
+	t.Helper()
 	body, _ := json.Marshal(req)
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/scan", bytes.NewReader(body)))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/scan", bytes.NewReader(body)))
 	return rec.Code
 }
 
@@ -35,7 +36,7 @@ func waitForScan(t *testing.T, s *Server) scanStatus {
 	t.Helper()
 	for range 300 {
 		rec := httptest.NewRecorder()
-		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/scan/status", nil))
+		bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/scan/status", nil))
 		var st scanStatus
 		if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
 			t.Fatalf("status decode: %v", err)
@@ -52,7 +53,7 @@ func waitForScan(t *testing.T, s *Server) scanStatus {
 func getReport(t *testing.T, s *Server) reportPayload {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/report", nil))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/report", nil))
 	var p reportPayload
 	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
 		t.Fatalf("report decode: %v", err)
@@ -63,7 +64,7 @@ func getReport(t *testing.T, s *Server) reportPayload {
 func TestReportBeforeAnyScan(t *testing.T) {
 	s := launcherServer()
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/report", nil))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/report", nil))
 
 	var payload reportPayload
 	json.Unmarshal(rec.Body.Bytes(), &payload)
@@ -79,7 +80,7 @@ func TestScanFromLauncher(t *testing.T) {
 	s := launcherServer()
 	dir, _ := filepath.Abs("../../testdata/exact")
 
-	if code := startScan(s, scanRequest{Path: dir}); code != http.StatusAccepted {
+	if code := startScan(t, s, scanRequest{Path: dir}); code != http.StatusAccepted {
 		t.Fatalf("scan start = %d, want 202", code)
 	}
 
@@ -106,7 +107,7 @@ func TestScanSimilarMode(t *testing.T) {
 	s := launcherServer()
 	dir, _ := filepath.Abs("../../testdata/similar")
 
-	if code := startScan(s, scanRequest{Path: dir, Similar: true, Threshold: 8}); code != http.StatusAccepted {
+	if code := startScan(t, s, scanRequest{Path: dir, Similar: true, Threshold: 8}); code != http.StatusAccepted {
 		t.Fatalf("scan start = %d, want 202", code)
 	}
 	if st := waitForScan(t, s); st.Error != "" {
@@ -123,7 +124,7 @@ func TestScanReportsProgress(t *testing.T) {
 	s := launcherServer()
 	dir, _ := filepath.Abs("../../testdata/exact")
 
-	if code := startScan(s, scanRequest{Path: dir}); code != http.StatusAccepted {
+	if code := startScan(t, s, scanRequest{Path: dir}); code != http.StatusAccepted {
 		t.Fatalf("scan start = %d, want 202", code)
 	}
 	st := waitForScan(t, s)
@@ -146,14 +147,14 @@ func TestScanReportsProgress(t *testing.T) {
 
 func TestScanRejectsEmptyPath(t *testing.T) {
 	s := launcherServer()
-	if code := startScan(s, scanRequest{Path: ""}); code != http.StatusBadRequest {
+	if code := startScan(t, s, scanRequest{Path: ""}); code != http.StatusBadRequest {
 		t.Errorf("empty path = %d, want 400", code)
 	}
 }
 
 func TestScanReportsBadFolder(t *testing.T) {
 	s := launcherServer()
-	if code := startScan(s, scanRequest{Path: filepath.Join("does", "not", "exist")}); code != http.StatusAccepted {
+	if code := startScan(t, s, scanRequest{Path: filepath.Join("does", "not", "exist")}); code != http.StatusAccepted {
 		t.Fatalf("scan start = %d, want 202", code)
 	}
 
@@ -172,10 +173,10 @@ func TestScanRejectsConcurrentScans(t *testing.T) {
 	dir, _ := filepath.Abs("../../testdata/similar")
 
 	// Start one scan and, before draining it, try to start another.
-	if code := startScan(s, scanRequest{Path: dir, Similar: true}); code != http.StatusAccepted {
+	if code := startScan(t, s, scanRequest{Path: dir, Similar: true}); code != http.StatusAccepted {
 		t.Fatalf("first scan = %d, want 202", code)
 	}
-	second := startScan(s, scanRequest{Path: dir, Similar: true})
+	second := startScan(t, s, scanRequest{Path: dir, Similar: true})
 	if second != http.StatusConflict && second != http.StatusAccepted {
 		// 409 if the first is still running, 202 if it already finished — both
 		// are correct; a 500 or silent overwrite would not be.
@@ -189,7 +190,7 @@ func TestBrowseReturnsPickedPath(t *testing.T) {
 	s.pickFolder = func(string) (string, error) { return `C:\photos`, nil }
 
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/browse", nil))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/browse", nil))
 
 	var resp map[string]string
 	json.Unmarshal(rec.Body.Bytes(), &resp)
@@ -203,7 +204,7 @@ func TestBrowseCancelled(t *testing.T) {
 	s.pickFolder = func(string) (string, error) { return "", osdialog.ErrCancelled }
 
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/browse", nil))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/browse", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("cancelled browse = %d, want 200 with empty path", rec.Code)
@@ -220,7 +221,7 @@ func TestBrowseUnsupported(t *testing.T) {
 	s.pickFolder = func(string) (string, error) { return "", osdialog.ErrUnsupported }
 
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/browse", nil))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/browse", nil))
 
 	if rec.Code != http.StatusNotImplemented {
 		t.Errorf("unsupported browse = %d, want 501 so the UI hides the button", rec.Code)

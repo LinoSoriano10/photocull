@@ -60,7 +60,7 @@ func fixtureServer(t *testing.T) (*Server, *fakeMover) {
 func TestReportEndpoint(t *testing.T) {
 	s, _ := fixtureServer(t)
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/report", nil))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/report", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -82,7 +82,7 @@ func TestThumbnailServesScannedFile(t *testing.T) {
 	abs, _ := filepath.Abs("../../testdata/similar/source.jpg")
 
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/thumb?path="+url.QueryEscape(abs), nil))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/thumb?path="+url.QueryEscape(abs), nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -101,7 +101,7 @@ func TestPreviewServesAndGuards(t *testing.T) {
 
 	// A scanned file is served as a JPEG.
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/preview?path="+url.QueryEscape(abs), nil))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/preview?path="+url.QueryEscape(abs), nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("preview status = %d, want 200", rec.Code)
 	}
@@ -111,7 +111,7 @@ func TestPreviewServesAndGuards(t *testing.T) {
 
 	// An unscanned path is refused, exactly like the thumbnail endpoint.
 	rec2 := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/api/preview?path="+url.QueryEscape(`C:\Windows\win.ini`), nil))
+	bound(t, s).ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, "/api/preview?path="+url.QueryEscape(`C:\Windows\win.ini`), nil))
 	if rec2.Code == http.StatusOK {
 		t.Error("preview served an unscanned path")
 	}
@@ -131,7 +131,7 @@ func TestThumbnailRejectsPathTraversal(t *testing.T) {
 	}
 	for _, url := range attempts {
 		rec := httptest.NewRecorder()
-		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, url, nil))
+		bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, url, nil))
 		if rec.Code == http.StatusOK {
 			t.Errorf("%s was served (status 200); it must be refused", url)
 		}
@@ -144,7 +144,7 @@ func TestDeleteMovesOnlyScannedFiles(t *testing.T) {
 
 	body, _ := json.Marshal(deleteRequest{Paths: []string{dupAbs}})
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/delete", bytes.NewReader(body)))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/delete", bytes.NewReader(body)))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -171,7 +171,7 @@ func TestDeleteRefusesUnscannedPath(t *testing.T) {
 
 	body, _ := json.Marshal(deleteRequest{Paths: []string{"C:\\Windows\\System32\\notepad.exe"}})
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/delete", bytes.NewReader(body)))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/delete", bytes.NewReader(body)))
 
 	if len(mover.moved) != 0 {
 		t.Fatalf("an unscanned path was moved: %v", mover.moved)
@@ -186,7 +186,7 @@ func TestDeleteRefusesUnscannedPath(t *testing.T) {
 func TestDeleteRejectsGet(t *testing.T) {
 	s, _ := fixtureServer(t)
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/delete", nil))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/delete", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("GET /api/delete = %d, want 405", rec.Code)
 	}
@@ -195,7 +195,7 @@ func TestDeleteRejectsGet(t *testing.T) {
 func TestServesIndexPage(t *testing.T) {
 	s, _ := fixtureServer(t)
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET / = %d, want 200", rec.Code)
 	}

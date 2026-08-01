@@ -130,7 +130,7 @@ For anything short of byte-identical, a look beats a file path.
 ```sh
 photocull serve ~/Photos --similar
 photocull serve ~/Documents --kind docs --similar
-# → Review at http://127.0.0.1:8080
+# → opens the app window on a fresh loopback port
 ```
 
 ### Thresholds and which copy to keep
@@ -205,7 +205,7 @@ Fixture provenance is documented in [`testdata/README.md`](testdata/README.md). 
 
 On Windows, double-clicking `photocull.exe` may do nothing whatsoever — no window, no error, no crash dialog. The binary is not broken. It is being killed.
 
-A security suite scores the *context* a program is launched in, not only the file itself. `explorer.exe` → unsigned executable → binds a local port is the shape of the commonest malware delivery path there is, and photocull matches it exactly: unsigned, freshly built, and the very first thing it does is listen on `127.0.0.1:8080` to serve its own interface. Measured on a machine running McAfee, the process starts, never gets as far as opening that port, and is terminated about five seconds in. The app is a `-H=windowsgui` build, so it has no console and nothing is printed anywhere.
+A security suite scores the *context* a program is launched in, not only the file itself. `explorer.exe` → unsigned executable → binds a local port is the shape of the commonest malware delivery path there is, and photocull matches it exactly: unsigned, freshly built, and the very first thing it does is listen on a loopback port to serve its own interface. Measured on a machine running McAfee, the process starts, never gets as far as opening that port, and is terminated about five seconds in. The app is a `-H=windowsgui` build, so it has no console and nothing is printed anywhere.
 
 `run-photocull.cmd` sidesteps this by putting `cmd.exe` in the chain instead, which is scored differently. Verified on that machine, same binary, minutes apart: launched by Explorer it dies at ~5 s having bound nothing; launched from the `.cmd` the window is up in well under a second. A renamed copy in a different folder failed identically, so this is about the launch path rather than one file's reputation.
 

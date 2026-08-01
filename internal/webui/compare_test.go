@@ -26,7 +26,7 @@ func comparePair(endpoint, a, b string) string {
 func getComparison(t *testing.T, s *Server, query string) comparison {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, query, nil))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, query, nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
 	}
@@ -82,7 +82,7 @@ func TestCompareRejectsUnscannedPath(t *testing.T) {
 		for _, tt := range attempts {
 			t.Run(endpoint+" "+tt.name, func(t *testing.T) {
 				rec := httptest.NewRecorder()
-				s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, endpoint+tt.query, nil))
+				bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, endpoint+tt.query, nil))
 				if rec.Code == http.StatusOK {
 					t.Errorf("status = 200; %s must refuse a path the scan never touched", endpoint)
 				}
@@ -95,7 +95,7 @@ func TestImageDiffServesAPNGMatchingTheComparisonGrid(t *testing.T) {
 	s, _ := fixtureServer(t)
 
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, comparePair("/api/imagediff", "source.jpg", "source_recompressed.jpg"), nil))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, comparePair("/api/imagediff", "source.jpg", "source_recompressed.jpg"), nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())

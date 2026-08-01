@@ -1,0 +1,24 @@
+version: 2
+
+# Dependencies are the part of a project that rots while you are not looking.
+# photocull links a PDF parser, a ZIP-based document reader, an image decoder
+# and a WebView host — all of them code that reads untrusted files, which is the
+# category where a known CVE matters most. Weekly is often enough for a tool
+# this size and rare enough not to become noise that gets ignored.
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
+
+  # The workflow actions are dependencies too, and pinned ones go stale
+  # silently: a v4 that stops being maintained looks exactly like a v4 that is.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    commit-message:
+      prefix: ci

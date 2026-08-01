@@ -25,10 +25,11 @@ func writeImage(t *testing.T, srcFixture, dst string) {
 	}
 }
 
-func startMerge(s *Server, req mergeRequest) int {
+func startMerge(t *testing.T, s *Server, req mergeRequest) int {
+	t.Helper()
 	body, _ := json.Marshal(req)
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/merge", bytes.NewReader(body)))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/merge", bytes.NewReader(body)))
 	return rec.Code
 }
 
@@ -36,7 +37,7 @@ func waitForMerge(t *testing.T, s *Server) scanStatus {
 	t.Helper()
 	for range 300 {
 		rec := httptest.NewRecorder()
-		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/merge/status", nil))
+		bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/merge/status", nil))
 		var st scanStatus
 		json.Unmarshal(rec.Body.Bytes(), &st)
 		if st.Done {
@@ -50,7 +51,7 @@ func waitForMerge(t *testing.T, s *Server) scanStatus {
 func mergeResult(t *testing.T, s *Server) mergeResultPayload {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/merge/result", nil))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/merge/result", nil))
 	var p mergeResultPayload
 	if err := json.Unmarshal(rec.Body.Bytes(), &p); err != nil {
 		t.Fatalf("decode merge result: %v", err)
@@ -67,7 +68,7 @@ func TestMergeEndpointFindsNewAndCopies(t *testing.T) {
 	writeImage(t, "exact/original.jpg", filepath.Join(source, "dup.jpg"))  // already in library
 	writeImage(t, "exact/unrelated.jpg", filepath.Join(source, "new.jpg")) // new
 
-	if code := startMerge(s, mergeRequest{Base: base, Source: source}); code != http.StatusAccepted {
+	if code := startMerge(t, s, mergeRequest{Base: base, Source: source}); code != http.StatusAccepted {
 		t.Fatalf("merge start = %d, want 202", code)
 	}
 	if st := waitForMerge(t, s); st.Error != "" {
@@ -82,7 +83,7 @@ func TestMergeEndpointFindsNewAndCopies(t *testing.T) {
 	// A thumbnail of a new (source) photo should be served — it is readable.
 	newPath := result.New[0].Path
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/thumb?path="+url.QueryEscape(newPath), nil))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/thumb?path="+url.QueryEscape(newPath), nil))
 	if rec.Code != http.StatusOK {
 		t.Errorf("thumbnail of a new photo = %d, want 200", rec.Code)
 	}
@@ -90,7 +91,7 @@ func TestMergeEndpointFindsNewAndCopies(t *testing.T) {
 	// But it must NOT be deletable via /api/delete (only copyable).
 	delBody, _ := json.Marshal(deleteRequest{Paths: []string{newPath}})
 	delRec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(delRec, httptest.NewRequest(http.MethodPost, "/api/delete", bytes.NewReader(delBody)))
+	bound(t, s).ServeHTTP(delRec, httptest.NewRequest(http.MethodPost, "/api/delete", bytes.NewReader(delBody)))
 	var delResp deleteResponse
 	json.Unmarshal(delRec.Body.Bytes(), &delResp)
 	if delResp.Moved != 0 {
@@ -100,7 +101,7 @@ func TestMergeEndpointFindsNewAndCopies(t *testing.T) {
 	// Copy it into the library.
 	copyBody, _ := json.Marshal(deleteRequest{Paths: []string{newPath}})
 	copyRec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(copyRec, httptest.NewRequest(http.MethodPost, "/api/merge/copy", bytes.NewReader(copyBody)))
+	bound(t, s).ServeHTTP(copyRec, httptest.NewRequest(http.MethodPost, "/api/merge/copy", bytes.NewReader(copyBody)))
 	var copyResp mergeCopyResponse
 	json.Unmarshal(copyRec.Body.Bytes(), &copyResp)
 	if copyResp.Copied != 1 {
@@ -120,13 +121,13 @@ func TestMergeCopyRejectsUnlistedPath(t *testing.T) {
 	source := t.TempDir()
 	writeImage(t, "exact/original.jpg", filepath.Join(source, "new.jpg"))
 
-	startMerge(s, mergeRequest{Base: base, Source: source})
+	startMerge(t, s, mergeRequest{Base: base, Source: source})
 	waitForMerge(t, s)
 
 	// A path the comparison never flagged must not be copied.
 	body, _ := json.Marshal(deleteRequest{Paths: []string{`C:\Windows\notepad.exe`}})
 	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/merge/copy", bytes.NewReader(body)))
+	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/merge/copy", bytes.NewReader(body)))
 	var resp mergeCopyResponse
 	json.Unmarshal(rec.Body.Bytes(), &resp)
 	if resp.Copied != 0 {
@@ -136,7 +137,7 @@ func TestMergeCopyRejectsUnlistedPath(t *testing.T) {
 
 func TestMergeRejectsMissingFolders(t *testing.T) {
 	s := launcherServer()
-	if code := startMerge(s, mergeRequest{Base: "", Source: ""}); code != http.StatusBadRequest {
+	if code := startMerge(t, s, mergeRequest{Base: "", Source: ""}); code != http.StatusBadRequest {
 		t.Errorf("empty folders = %d, want 400", code)
 	}
 }

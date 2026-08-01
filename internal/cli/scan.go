@@ -16,9 +16,12 @@ func newScanCmd(global *globalFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "scan <directory>",
-		Short: "Report duplicate photos without changing anything",
-		Long: `Scan walks a directory, fingerprints every photo and reports the duplicates
-it finds. It only reads: no file is moved, renamed or deleted.
+		Short: "Report duplicates without changing anything",
+		Long: `Scan walks a directory, fingerprints what it finds and reports the duplicates.
+It only reads: no file is moved, renamed or deleted.
+
+Add --kind docs to look through documents rather than photographs, and
+--similar to match files that are alike rather than only identical.
 
 Use it first to see what is there, then reach for "photocull clean".`,
 		Args:         cobra.ExactArgs(1),

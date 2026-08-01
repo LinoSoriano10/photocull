@@ -53,18 +53,25 @@ func newRootCmd() *cobra.Command {
 
 	root := &cobra.Command{
 		Use:   "photocull",
-		Short: "Find and remove duplicate photos, safely",
-		Long: `photocull scans a directory for duplicate photos and helps you remove them.
+		Short: "Find and remove duplicate photos and documents, safely",
+		Long: `photocull scans a directory for duplicates and helps you remove them.
 
-It finds two kinds of duplicate: files that are byte-for-byte identical, and
-photos that merely look the same after being resized, re-compressed or
-converted between formats.
+With --kind photos (the default) it compares pictures by what they look like,
+so a photo and its resized, re-compressed or format-converted copy land in one
+group. With --kind docs it compares documents by what they say, so a report and
+a later draft of it do — and every other file in the folder is still checked for
+byte-identical copies, because a scan with blind spots is worse than no scan.
+
+Files photocull cannot read inside at all — a scanned PDF, a legacy .doc, a
+.zip — are grouped by name and size instead, and marked "related". That tier is
+a hint for a person: nothing in it is ever pre-selected, and clean will not
+touch it.
 
 Nothing is ever deleted permanently. Duplicates go to the system recycle bin,
 and only after you confirm.
 
-Run photocull with no command (or double-click the app) to open a window in
-your browser where you pick a folder and a mode. Or use the scan / clean /
+Run photocull with no command (or double-click the app) to open a window where
+you pick what to look through, a mode and a folder. Or use the scan / clean /
 serve commands directly.`,
 		Version:       version,
 		SilenceUsage:  true,

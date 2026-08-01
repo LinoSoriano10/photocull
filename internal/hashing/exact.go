@@ -1,6 +1,14 @@
-// Package hashing computes the two fingerprints photocull relies on: an exact
-// content hash to find byte-identical files, and a perceptual hash to find
-// photos that only look the same.
+// Package hashing computes the fingerprints photocull relies on: an exact
+// content hash to find byte-identical files, and two content fingerprints to
+// find files that are merely alike — a perceptual hash for photographs, a
+// SimHash for text.
+//
+// The last two live side by side rather than in packages of their own, and that
+// arrangement is the point. Both are 64 bits, both are compared by the same
+// Distance function, and both feed the same union-find. Seeing them next to each
+// other is what makes it obvious that "does this picture look like that one" and
+// "does this document say the same as that one" are the same question asked of
+// different bytes — which is the whole reason one binary can do both.
 package hashing
 
 import (

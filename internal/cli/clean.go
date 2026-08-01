@@ -31,13 +31,18 @@ func newCleanCmd(global *globalFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "clean <directory>",
-		Short: "Move duplicate photos to the recycle bin",
+		Short: "Move duplicates to the recycle bin",
 		Long: `Clean finds duplicates and moves them to the system recycle bin, keeping the
 one copy photocull suggests in each group.
 
 By default it only shows what it would do — nothing is touched. Add --confirm
 to actually move the duplicates. Even then, they go to the recycle bin, never
-to permanent deletion, so a mistake is always recoverable.`,
+to permanent deletion, so a mistake is always recoverable.
+
+Groups marked "related" are never touched, whatever the flags say. Those files
+were matched on their names and sizes because photocull could not read inside
+them, which is a hint for a person rather than a finding to act on. Review them
+with "photocull serve".`,
 		Args:         cobra.ExactArgs(1),
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

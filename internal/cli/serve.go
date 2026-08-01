@@ -19,13 +19,18 @@ func newServeCmd(global *globalFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "serve <directory>",
-		Short: "Review duplicates visually in a local web page",
-		Long: `Serve scans a directory and opens a small local web page for reviewing the
-duplicates by eye before deleting them.
+		Short: "Review duplicates in the app window before removing them",
+		Long: `Serve scans a directory and opens the app on it, so the duplicates can be
+reviewed before anything is removed.
 
-This is the safe way to handle "similar" matches, where a thumbnail tells you
-in a glance what a file path cannot. Selected photos are moved to the recycle
-bin, never deleted permanently.
+This is the safe way to handle everything photocull is not certain about. For
+photographs, a thumbnail tells you in a glance what a file path cannot, and two
+copies can be laid over each other, blinked between, or diffed pixel by pixel.
+For documents, the exact words that differ between one and the next are shown,
+with the identical stretches collapsed — nobody is going to read thirty pages
+twice to find a changed adjective.
+
+Selected files are moved to the recycle bin, never deleted permanently.
 
 The server binds to localhost only.`,
 		Args:         cobra.ExactArgs(1),

@@ -174,3 +174,100 @@ func TestSummaryReportsRelatedSeparately(t *testing.T) {
 		t.Errorf("summary does not warn that the related groups are unreviewed:\n%s", got)
 	}
 }
+
+// TestRenderGroupsMarksRelatedForReviewNotDeletion guards a one-word promise.
+//
+// clean refuses to touch a related group, so a table that printed "delete"
+// beside those files would be telling the user something the tool deliberately
+// will not do — and inviting them to go and do it by hand.
+func TestRenderGroupsMarksRelatedForReviewNotDeletion(t *testing.T) {
+	groups := []dedupe.Group{{
+		Type:      dedupe.Related,
+		KeepIndex: 0,
+		Files: []scanner.FileMeta{
+			{Path: "informe.pdf", Size: 4000, ModTime: time.Now()},
+			{Path: "informe (1).pdf", Size: 4010, ModTime: time.Now()},
+		},
+	}}
+
+	var buf strings.Builder
+	RenderGroups(&buf, "", groups)
+	got := buf.String()
+
+	if strings.Contains(got, "delete") {
+		t.Errorf("a related group is marked for deletion; clean will not act on it:\n%s", got)
+	}
+	if !strings.Contains(got, "review") {
+		t.Errorf("a related group is not marked for review:\n%s", got)
+	}
+	if !strings.Contains(got, "if they turn out to be copies") {
+		t.Errorf("the header states the bytes as reclaimable rather than as a guess:\n%s", got)
+	}
+}
+
+// TestRenderGroupsDropsTheDimensionsColumnForDocuments keeps the table
+// readable. On a documents scan nothing has a resolution, so the column would
+// be a row of question marks down the whole report — which is worse than no
+// column, because it reads as missing data rather than an inapplicable one.
+func TestRenderGroupsDropsTheDimensionsColumnForDocuments(t *testing.T) {
+	docs := []dedupe.Group{{
+		Type:      dedupe.Similar,
+		KeepIndex: 0,
+		Files: []scanner.FileMeta{
+			{Path: "report.txt", Size: 1000, Decoded: true},
+			{Path: "report_v2.txt", Size: 1010, Decoded: true},
+		},
+	}}
+	var docBuf strings.Builder
+	RenderGroups(&docBuf, "", docs)
+	if strings.Contains(docBuf.String(), "?") {
+		t.Errorf("documents were given a dimensions column of question marks:\n%s", docBuf.String())
+	}
+
+	// A photo scan must still get it.
+	photos := []dedupe.Group{{
+		Type:      dedupe.Similar,
+		KeepIndex: 0,
+		Files:     []scanner.FileMeta{file("a.jpg", "h", 1000), file("b.jpg", "h", 1000)},
+	}}
+	var photoBuf strings.Builder
+	RenderGroups(&photoBuf, "", photos)
+	if !strings.Contains(photoBuf.String(), "100x100") {
+		t.Errorf("photos lost their dimensions column:\n%s", photoBuf.String())
+	}
+}
+
+// TestRecountKeepsScanTotalsAndRefreshesTheRest covers what happens after a
+// delete in the review window. The scan-time totals describe a walk that
+// already happened and must not change; everything derived from the groups has
+// to follow them down, or the page shows figures for files that are gone.
+func TestRecountKeepsScanTotalsAndRefreshesTheRest(t *testing.T) {
+	before := Stats{
+		FilesScanned:     6,
+		TotalBytes:       9000,
+		ReadErrors:       1,
+		Groups:           2,
+		ExactGroups:      2,
+		DuplicateFiles:   3,
+		ReclaimableBytes: 2000,
+	}
+
+	// One group survives the delete; the other is gone entirely.
+	after := Recount(before, []dedupe.Group{{
+		Type:      dedupe.Exact,
+		KeepIndex: 0,
+		Files:     []scanner.FileMeta{file("c.jpg", "h2", 500), file("d.jpg", "h2", 500)},
+	}})
+
+	if after.FilesScanned != 6 || after.TotalBytes != 9000 || after.ReadErrors != 1 {
+		t.Errorf("scan-time totals changed: %+v", after)
+	}
+	if after.Groups != 1 || after.ExactGroups != 1 {
+		t.Errorf("group counts = %d/%d, want 1/1", after.Groups, after.ExactGroups)
+	}
+	if after.DuplicateFiles != 1 || after.ReclaimableBytes != 500 {
+		t.Errorf("derived figures = %d files / %d bytes, want 1 / 500: the page would "+
+			"still be offering space from files already in the recycle bin",
+			after.DuplicateFiles, after.ReclaimableBytes)
+	}
+}

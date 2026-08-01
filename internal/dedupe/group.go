@@ -1,5 +1,13 @@
 // Package dedupe turns a flat list of scanned files into groups of duplicates,
 // and suggests which file in each group is the one worth keeping.
+//
+// Nothing in here knows what a file is. Exact grouping compares content hashes,
+// similarity grouping compares 64-bit fingerprints by Hamming distance, and
+// neither cares whether those numbers came from pixels or from prose — which is
+// why photographs and documents share this code rather than each having their
+// own copy of it. The one pass that does look at a file is GroupRelated, and it
+// looks only at the name and the size, because it exists precisely for the
+// files nothing could read inside.
 package dedupe
 
 import (

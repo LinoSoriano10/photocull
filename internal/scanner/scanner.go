@@ -8,8 +8,13 @@
 // One goroutine lists files (cheap, and the filesystem serialises it anyway),
 // a pool of workers does the expensive per-file reading and hashing, and the
 // calling goroutine collects the results. This is where the concurrency
-// actually pays off: on a directory with thousands of photos the workers keep
+// actually pays off: on a directory holding thousands of files the workers keep
 // the disk and every CPU core busy at once.
+//
+// What a fingerprint means is not decided here. The scanner reads bytes, hashes
+// them, and hands them to whichever fingerprint.Extractor it was given — which
+// is the seam that lets the same walk deduplicate a photo library and a
+// documents folder without a second copy of any of this.
 package scanner
 
 import (

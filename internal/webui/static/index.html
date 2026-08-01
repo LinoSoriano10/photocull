@@ -219,6 +219,37 @@
         <p id="single-cap" class="muted"></p>
       </div>
 
+      <!--
+        Two documents, compared a word at a time. The identical stretches are
+        collapsed to a count you can click to open, because a change buried in
+        thirty unchanged pages is a change nobody finds.
+      -->
+      <div id="stage-doc" class="stage-pane doc hidden">
+        <div class="doc-heads">
+          <p id="doc-a-cap" class="muted"></p>
+          <p id="doc-b-cap" class="muted"></p>
+        </div>
+        <div id="doc-diff" class="doc-diff"></div>
+        <p class="doc-caveat muted">
+          This compares the text photocull extracted, not the documents as they
+          look. A file and its PDF export will differ in page numbers, headers
+          and hyphenation that are not changes to the content.
+        </p>
+      </div>
+
+      <!--
+        Nothing to compare: a scan, a .zip, a legacy .doc. The two files' details
+        side by side are the whole of the evidence there is, and seeing the same
+        byte count under two different paths usually settles it.
+      -->
+      <div id="stage-opaque" class="stage-pane opaque hidden">
+        <p id="opaque-note" class="opaque-note"></p>
+        <div class="opaque-cols">
+          <dl id="opaque-a"></dl>
+          <dl id="opaque-b"></dl>
+        </div>
+      </div>
+
       <p id="viewer-note" class="viewer-note hidden"></p>
     </div>
 

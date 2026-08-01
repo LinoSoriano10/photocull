@@ -12,11 +12,13 @@ import (
 	"time"
 
 	"photocull/internal/doctext"
+	"photocull/internal/fingerprint"
 	"photocull/internal/imageutil"
 	"photocull/internal/osdialog"
 	"photocull/internal/pipeline"
 	"photocull/internal/report"
 	"photocull/internal/scanner"
+	"photocull/internal/textdiff"
 )
 
 // reportPayload is what the page renders. Paths are sent both absolute (for the
@@ -383,25 +385,42 @@ func (s *Server) handleSnippet(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, text)
 }
 
-// readSnippet extracts a document's text and returns at most n runes of it.
-func readSnippet(path string, n int) (string, error) {
+// documentText reads one file's text, or says why there is none.
+//
+// The two results are the two outcomes that matter to the page, and neither is
+// an error: a file photocull cannot read inside is ordinary in documents mode,
+// and the reason is the useful thing to show in its place. reason is empty
+// exactly when text is usable.
+func documentText(path string) (text, reason string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", err
+		// Phrased for the person deciding, like doctext's own reasons. The
+		// underlying error is not shown: it names an absolute path the page
+		// already displays, and adds nothing to the decision.
+		return "", "this file could not be opened"
 	}
 	defer f.Close()
 
 	out, err := doctext.Extract(f, path)
 	if err != nil {
-		return "", err
+		return "", "this file is damaged, or is not the format its name claims"
 	}
 	if !out.Usable {
-		return "", errors.New("webui: " + out.Reason)
+		return "", out.Reason
+	}
+	return out.Text, ""
+}
+
+// readSnippet extracts a document's text and returns at most n runes of it.
+func readSnippet(path string, n int) (string, error) {
+	text, reason := documentText(path)
+	if reason != "" {
+		return "", errors.New("webui: " + reason)
 	}
 
 	// Cut on runes, not bytes: slicing UTF-8 by byte count lands mid-character
 	// and the browser renders a replacement glyph at the end of every snippet.
-	runes := []rune(out.Text)
+	runes := []rune(text)
 	if len(runes) > n {
 		return string(runes[:n]) + "…", nil
 	}
@@ -415,13 +434,54 @@ func readSnippet(path string, n int) (string, error) {
 // holds them from /api/report, and sending them twice would be one more place
 // for the two views to disagree about what a file is.
 type comparison struct {
-	// Kind selects which panel the page renders. Only images compare this way
-	// today; documents will answer the same endpoint with their own shape.
+	// Kind selects which panel the page renders: "image" for two photographs,
+	// "doc" for two documents whose text came out, and "opaque" for a pair
+	// photocull cannot read inside at all — a scanned PDF, a .zip, a legacy
+	// .doc. The third is not a failure of the other two, it is the honest
+	// answer for the tier that was matched on names and sizes alone.
 	Kind  string     `json:"kind"`
 	Image *imageDiff `json:"image,omitempty"`
+	Doc   *docDiff   `json:"doc,omitempty"`
+
+	// ReasonA and ReasonB say why each file yielded no text, for the opaque
+	// panel. They are doctext's own wording, which is already phrased for the
+	// person deciding whether to delete the file.
+	ReasonA string `json:"reasonA,omitempty"`
+	ReasonB string `json:"reasonB,omitempty"`
 
 	// Note explains, in the user's words, why there is no comparison to show.
 	Note string `json:"note,omitempty"`
+}
+
+// docDiff is the wire shape of a word-level comparison. It mirrors
+// textdiff.Diff rather than reusing it, for the same reason imageDiff mirrors
+// imageutil's result: the diff package has no business knowing what JSON the
+// page happens to want this week.
+type docDiff struct {
+	Hunks        []hunkView `json:"hunks"`
+	SameWords    int        `json:"sameWords"`
+	ChangedWords int        `json:"changedWords"`
+
+	// Trailing is the identical run after the last change, reported like the
+	// runs between hunks so the page can say "nothing changed after this".
+	TrailingWords int    `json:"trailingWords,omitempty"`
+	Trailing      string `json:"trailing,omitempty"`
+
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+type hunkView struct {
+	Before string `json:"before,omitempty"`
+	Del    string `json:"del,omitempty"`
+	Ins    string `json:"ins,omitempty"`
+	After  string `json:"after,omitempty"`
+
+	// SkippedWords counts the identical words collapsed before this hunk, and
+	// Skipped holds them. The text is sent rather than fetched on demand
+	// because expanding a collapsed run is a click on something already on
+	// screen, and a round trip there feels like a fault.
+	SkippedWords int    `json:"skippedWords,omitempty"`
+	Skipped      string `json:"skipped,omitempty"`
 }
 
 type imageDiff struct {
@@ -455,11 +515,28 @@ func (s *Server) resolvePair(r *http.Request) (a, b string, ok bool) {
 	return a, b, okA && okB
 }
 
-// handleCompare reports how two scanned photos differ.
+// scanKind reports what the loaded analysis was about.
+func (s *Server) scanKind() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stats.Kind
+}
+
+// handleCompare reports how two scanned files differ.
 func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 	a, b, ok := s.resolvePair(r)
 	if !ok {
 		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	// Which comparison to run is decided by what was scanned, not by what the
+	// files look like. Documents mode deliberately walks every extension, so a
+	// .jpg sitting in a documents folder is part of a documents scan and its
+	// group is a documents group — offering a pixel diff there would be
+	// answering a question nobody asked.
+	if s.scanKind() == string(fingerprint.Docs) {
+		s.compareDocuments(w, a, b)
 		return
 	}
 
@@ -493,6 +570,58 @@ func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, comparison{Kind: "image", Image: out})
+}
+
+// compareDocuments answers /api/compare for a documents scan.
+//
+// Both files are re-read here rather than remembered from the scan. Keeping
+// every document's text would multiply a scan's memory by the size of the
+// documents themselves — for text that is only ever looked at when somebody
+// opens one pair out of hundreds. Two file reads in response to a click is the
+// cheaper side of that trade by a wide margin.
+func (s *Server) compareDocuments(w http.ResponseWriter, a, b string) {
+	textA, reasonA := documentText(a)
+	textB, reasonB := documentText(b)
+
+	if reasonA != "" || reasonB != "" {
+		// This is the related tier's own panel. There is no text to compare and
+		// pretending otherwise would be worse than saying so: the page falls
+		// back to laying the two files' details side by side, which for a pair
+		// matched on name and size is exactly the evidence there is.
+		writeJSON(w, http.StatusOK, comparison{
+			Kind:    "opaque",
+			ReasonA: reasonA,
+			ReasonB: reasonB,
+			Note:    "photocull cannot read text inside at least one of these files, so there is nothing to compare word by word.",
+		})
+		return
+	}
+
+	d := textdiff.Words(textA, textB)
+
+	hunks := make([]hunkView, 0, len(d.Hunks))
+	for _, h := range d.Hunks {
+		hunks = append(hunks, hunkView{
+			Before:       h.Before,
+			Del:          h.Del,
+			Ins:          h.Ins,
+			After:        h.After,
+			SkippedWords: h.SkippedWords,
+			Skipped:      h.Skipped,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, comparison{
+		Kind: "doc",
+		Doc: &docDiff{
+			Hunks:         hunks,
+			SameWords:     d.SameWords,
+			ChangedWords:  d.ChangedWords,
+			TrailingWords: d.TrailingWords,
+			Trailing:      d.Trailing,
+			Truncated:     d.Truncated,
+		},
+	})
 }
 
 // handleImageDiff renders the difference map between two scanned photos.

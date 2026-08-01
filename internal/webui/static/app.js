@@ -74,9 +74,10 @@ const KINDS = {
     slider: { min: 2, max: 12, value: 6 },
     reviewHint:
       "Each group below is one set of documents that say much the same thing. The " +
-      "opening lines of each are shown so you can tell them apart; scroll a card to " +
-      "read further. Tick the ones to remove — nothing is deleted until you press the " +
-      "button above, and even then it only goes to the recycle bin.",
+      "opening lines of each are shown so you can tell them apart. Click one to see " +
+      "exactly which words differ from the copy being kept, then tick the ones to " +
+      "remove. Nothing is deleted until you press the button above, and even then it " +
+      "only goes to the recycle bin.",
     mergeReviewHint:
       "These documents are not in the destination folder. Tick the ones to add and " +
       "press the button.",
@@ -425,34 +426,35 @@ function fileCard(file, group, index) {
   name.title = file.path;
   meta.textContent = detailLine(file, reviewKind);
 
+  // Clicking a card opens the comparison against the copy being kept, which is
+  // the only comparison that matters: every decision here is "should this go,
+  // given that one stays?". It never toggles the delete checkbox, so looking
+  // closely can't accidentally select a file.
+  const open = () => {
+    // A click that ends a text selection is somebody finishing a drag inside
+    // the snippet, not asking for the comparison.
+    if (isDoc && !window.getSelection().isCollapsed) return;
+    openViewer(group.files, index, group.keepIndex, reviewKind);
+  };
+  thumbWrap.title = isKeep
+    ? "Click to compare against the other copies"
+    : "Click to compare against the copy being kept";
+  thumbWrap.addEventListener("click", open);
+  thumbWrap.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+  });
+
   if (isDoc) {
     // A document has nothing to look at, so the card shows what it says.
-    // Comparing two of them properly needs a word-level diff rather than a
-    // thumbnail, so the card is text to read, not a button to press.
     fig.classList.add("doc");
     img.classList.add("hidden");
-    node.querySelector(".zoom").classList.add("hidden");
+    node.querySelector(".zoom").textContent = "⇄";
     snippet.classList.remove("hidden");
-    thumbWrap.removeAttribute("role");
-    thumbWrap.removeAttribute("tabindex");
-    thumbWrap.title = "";
     snippet.textContent = "reading…";
     fillSnippet(snippet, file, groupType);
   } else {
     img.src = `/api/thumb?path=${encodeURIComponent(file.path)}`;
     img.alt = file.relPath;
-    thumbWrap.title = isKeep
-      ? "Click to compare against the other copies"
-      : "Click to compare against the copy being kept";
-
-    // Clicking the photo opens the comparison view against the copy being kept;
-    // it never toggles the delete checkbox, so looking closely can't
-    // accidentally select a file.
-    const open = () => openViewer(group.files, index, group.keepIndex);
-    thumbWrap.addEventListener("click", open);
-    thumbWrap.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
-    });
   }
 
   if (isKeep) {
@@ -577,6 +579,8 @@ const panes = {
   stack: document.getElementById("stage-stack"),
   heat: document.getElementById("stage-heat"),
   single: document.getElementById("stage-single"),
+  doc: document.getElementById("stage-doc"),
+  opaque: document.getElementById("stage-opaque"),
 };
 
 // How long each photo stays up in blink mode. Fast enough that the eye reads a
@@ -602,7 +606,7 @@ function modeButton(view) {
 // openSingle shows one photo on its own — the add-to-library gallery has
 // nothing to compare against.
 function openSingle(file) {
-  vs = { view: "single", others: [], at: 0, zoom: identityZoom() };
+  vs = { view: "single", kind: "photos", others: [], at: 0, zoom: identityZoom() };
   document.getElementById("single-img").src = previewURL(file);
   document.getElementById("single-cap").textContent = fileCaption(file);
   viewerModes.classList.add("hidden");
@@ -617,9 +621,13 @@ function openSingle(file) {
 // openViewer compares one file in a group against the copy being kept, which is
 // the only comparison that matters: every decision in the review view is
 // "should this go, given that one stays?".
-function openViewer(files, index, keepIndex) {
+function openViewer(files, index, keepIndex, kind) {
+  const isDoc = kind === "docs";
   const others = files.map((_, i) => i).filter((i) => i !== keepIndex);
   if (!others.length || keepIndex < 0 || keepIndex >= files.length) {
+    // A document on its own has nothing to lay beside it, and its text is
+    // already on the card, so there is no view worth opening.
+    if (isDoc) return;
     openSingle(files[index]);
     return;
   }
@@ -630,23 +638,44 @@ function openViewer(files, index, keepIndex) {
     files,
     keepIndex,
     others,
+    kind,
     at: Math.max(0, others.indexOf(wanted)),
-    view: "side",
+    view: isDoc ? "doc" : "side",
     wipe: 0.5,
     zoom: identityZoom(),
     blink: null,
   };
 
-  viewerModes.classList.remove("hidden");
+  // The four ways of looking at a pair of photographs mean nothing for text,
+  // so the bar loses them rather than offering four buttons that all show the
+  // same thing.
+  viewerModes.classList.toggle("hidden", isDoc);
   viewerFoot.classList.toggle("hidden", others.length < 2);
-  setView("side");
+  if (isDoc) setPane("doc");
+  else setView("side");
   loadPair();
   viewer.classList.remove("hidden");
 }
 
-async function loadPair() {
+// loadSeq orders the responses, not the requests. Stepping quickly through a
+// group starts several comparisons, and a document comparison is slow enough
+// (two file reads and a diff) that an earlier one can land after a later one
+// and render the wrong pair over the right one.
+let loadSeq = 0;
+
+function loadPair() {
   const a = vs.files[vs.keepIndex];
   const b = vs.files[vs.others[vs.at]];
+
+  viewerPos.textContent = `Copy ${vs.at + 1} of ${vs.others.length}`;
+  viewerVerdict.textContent = "comparing…";
+  viewerNote.classList.add("hidden");
+
+  if (vs.kind === "docs") loadDocPair(a, b);
+  else loadPhotoPair(a, b);
+}
+
+async function loadPhotoPair(a, b) {
   const urlA = previewURL(a);
   const urlB = previewURL(b);
 
@@ -662,19 +691,160 @@ async function loadPair() {
     `/api/imagediff?a=${encodeURIComponent(a.path)}&b=${encodeURIComponent(b.path)}`;
   document.getElementById("heat-cap").textContent =
     `Red marks where "${b.relPath}" differs from the copy being kept.`;
-  viewerPos.textContent = `Copy ${vs.at + 1} of ${vs.others.length}`;
 
   resetZoom();
-  viewerVerdict.textContent = "comparing…";
-  viewerNote.classList.add("hidden");
 
+  const mine = ++loadSeq;
+  const cmp = await compare(a, b);
+  if (mine !== loadSeq || !vs) return;
+  if (!cmp) {
+    // The photos are still there to look at; only the summary is missing.
+    viewerVerdict.textContent = "";
+    return;
+  }
+  renderVerdict(cmp);
+}
+
+async function compare(a, b) {
   try {
     const res = await fetch(`/api/compare?a=${encodeURIComponent(a.path)}&b=${encodeURIComponent(b.path)}`);
     if (!res.ok) throw new Error(String(res.status));
-    renderVerdict(await res.json());
+    return await res.json();
   } catch {
-    // The photos are still there to look at; only the summary is missing.
+    return null;
+  }
+}
+
+// ---- Document comparison ----
+
+const docDiffEl = document.getElementById("doc-diff");
+
+async function loadDocPair(a, b) {
+  document.getElementById("doc-a-cap").textContent = `KEEP · ${fileCaption(a)}`;
+  document.getElementById("doc-b-cap").textContent = fileCaption(b);
+  docDiffEl.textContent = "Reading both documents…";
+  setPane("doc");
+  vs.view = "doc";
+
+  const mine = ++loadSeq;
+  const cmp = await compare(a, b);
+  if (mine !== loadSeq || !vs) return;
+
+  if (!cmp) {
     viewerVerdict.textContent = "";
+    docDiffEl.textContent = "These two documents could not be compared.";
+    return;
+  }
+  if (cmp.kind === "opaque") {
+    renderOpaque(cmp, a, b);
+    return;
+  }
+  setPane("doc");
+  vs.view = "doc";
+  renderDocDiff(cmp.doc);
+}
+
+function renderDocDiff(d) {
+  docDiffEl.textContent = "";
+  const total = d.sameWords + d.changedWords;
+
+  if (!d.hunks.length) {
+    const p = document.createElement("p");
+    p.className = "doc-identical";
+    p.textContent = total === 0
+      ? "Neither file yielded any text to compare."
+      : `The text is identical — all ${total.toLocaleString()} words match.`;
+    docDiffEl.appendChild(p);
+    viewerVerdict.textContent = total === 0 ? "" : "No differences in the text.";
+    return;
+  }
+
+  for (const h of d.hunks) {
+    if (h.skippedWords) docDiffEl.appendChild(skipMarker(h.skippedWords, h.skipped));
+    docDiffEl.appendChild(hunkParagraph(h));
+  }
+  if (d.trailingWords) docDiffEl.appendChild(skipMarker(d.trailingWords, d.trailing));
+
+  const pct = total ? (d.changedWords / total) * 100 : 0;
+  const n = d.hunks.length;
+  viewerVerdict.textContent =
+    `${n} change${n === 1 ? "" : "s"} · ${d.changedWords.toLocaleString()} of ` +
+    `${total.toLocaleString()} words differ (${pct < 1 ? pct.toFixed(1) : Math.round(pct)}%)` +
+    (d.truncated ? " · only the first part of these documents was compared" : "");
+}
+
+// hunkParagraph renders one change with the words around it.
+//
+// Every piece goes in as text, never as markup. This is the contents of a file
+// off the user's disk, and a document containing a <script> tag must render as
+// a document containing a <script> tag.
+function hunkParagraph(h) {
+  const p = document.createElement("p");
+  if (h.before) p.append(h.before + " ");
+  if (h.del) {
+    const el = document.createElement("del");
+    el.textContent = h.del;
+    p.append(el, " ");
+  }
+  if (h.ins) {
+    const el = document.createElement("ins");
+    el.textContent = h.ins;
+    p.append(el, " ");
+  }
+  if (h.after) p.append(h.after);
+  return p;
+}
+
+// skipMarker stands in for a stretch of text that did not change. It opens,
+// because "what did I just skip past?" is a fair question when the answer
+// decides whether a file goes in the bin.
+function skipMarker(count, text) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "skip";
+  btn.textContent = `··· ${count.toLocaleString()} identical words ···`;
+  btn.title = "Click to read them";
+  btn.addEventListener("click", () => {
+    const p = document.createElement("p");
+    p.className = "skip-text";
+    p.textContent = text;
+    btn.replaceWith(p);
+  });
+  return btn;
+}
+
+// renderOpaque is the panel for the related tier: two files photocull could not
+// read inside, matched on their names and sizes alone. There is no diff to
+// show, and inventing one would be worse than saying so — seeing the same byte
+// count under two different paths usually settles it on its own.
+function renderOpaque(cmp, a, b) {
+  setPane("opaque");
+  vs.view = "opaque";
+  document.getElementById("opaque-note").textContent = cmp.note || "";
+  fillOpaque(document.getElementById("opaque-a"), a, b, cmp.reasonA, true);
+  fillOpaque(document.getElementById("opaque-b"), b, a, cmp.reasonB, false);
+
+  viewerVerdict.textContent = a.size === b.size
+    ? "Identical in size, to the byte."
+    : `Sizes differ by ${humanBytes(Math.abs(a.size - b.size))}.`;
+}
+
+function fillOpaque(dl, file, other, reason, isKeep) {
+  dl.textContent = "";
+  const rows = [
+    ["File", (isKeep ? "KEEP · " : "") + file.relPath, ""],
+    ["Full path", file.path, ""],
+    ["Size", `${file.size.toLocaleString()} bytes`, file.size === other.size ? "same" : "differs"],
+    ["Modified", file.modTime, file.modTime === other.modTime ? "same" : "differs"],
+    ["Text", reason || "readable", ""],
+  ];
+  for (const [label, value, cls] of rows) {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    if (cls) dd.classList.add(cls);
+    dl.append(dt, dd);
   }
 }
 
@@ -868,6 +1038,10 @@ function closeViewer() {
   stopBlink();
   viewer.classList.add("hidden");
   for (const img of viewer.querySelectorAll("img")) img.src = "";
+  // A diff carries the collapsed runs with it, which for two long documents is
+  // most of both of them; there is no reason to hold that while it is not on
+  // screen.
+  docDiffEl.textContent = "";
   vs = null;
   drag = null;
 }
@@ -890,6 +1064,16 @@ document.addEventListener("keydown", (e) => {
   if (!vs) return;
   if (e.key === "Escape") { closeViewer(); return; }
   if (vs.view === "single") return;
+
+  // Documents have one view, so only the arrows mean anything; 1-4 would switch
+  // to panes that hold photographs.
+  if (vs.kind === "docs") {
+    if (e.key === "ArrowLeft") stepCopy(-1);
+    else if (e.key === "ArrowRight") stepCopy(1);
+    else return;
+    e.preventDefault();
+    return;
+  }
 
   switch (e.key) {
     case "ArrowLeft": stepCopy(-1); break;

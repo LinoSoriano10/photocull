@@ -112,8 +112,11 @@ figure.file { margin: 0; }
 /* A document card puts the opening lines of the file where the thumbnail goes.
    It scrolls rather than clipping, because the first paragraph of two drafts is
    often word-for-word identical and the difference is a little further down. */
-.file.doc .thumb-wrap { aspect-ratio: 4 / 3; cursor: default; }
-.file.doc .thumb-wrap:hover { border-color: transparent; }
+.file.doc .thumb-wrap { aspect-ratio: 4 / 3; }
+/* The card is both a thing to read and a button to press, so the compare
+   affordance stays visible instead of appearing on hover: the text cursor over
+   the snippet would otherwise be the only signal, and it says the opposite. */
+.file.doc .zoom { opacity: 1; }
 .snippet {
   margin: 0;
   height: 100%;
@@ -384,6 +387,113 @@ button.secondary { background: var(--panel-2); color: var(--text); border: 1px s
   color: #fff;
   background: var(--accent);
   border-radius: 50%;
+}
+
+/* ---- Document comparison ---- */
+
+.stage-pane.doc { gap: 10px; }
+/* The two captions sit at the outer edges, so which document is on which side
+   of every change reads off the header without being spelled out per hunk. */
+.doc-heads { display: flex; gap: 14px; }
+.doc-heads p { flex: 1; min-width: 0; margin: 0; text-align: left; }
+.doc-heads p:last-child { text-align: right; }
+
+.doc-diff {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 20px;
+  border-radius: 6px;
+  background: #101216;
+  /* Prose, not code: this is read as sentences, and a monospace font at this
+     length is slower to read for no gain. */
+  font-size: 15px;
+  line-height: 1.7;
+}
+.doc-diff p { margin: 0 0 4px; color: #cfd4dc; }
+
+/* Colour carries the meaning here, so it is not the only thing that does: the
+   removed side is struck through and the added side underlined, which survives
+   both colour blindness and a black-and-white screenshot. */
+.doc-diff del {
+  background: rgba(255, 90, 90, 0.22);
+  color: #ffc9c9;
+  text-decoration: line-through;
+  padding: 1px 3px;
+  border-radius: 3px;
+}
+.doc-diff ins {
+  background: rgba(56, 193, 114, 0.22);
+  color: #b6f0cd;
+  text-decoration: underline;
+  padding: 1px 3px;
+  border-radius: 3px;
+}
+
+/* A collapsed run is a button because it opens; it looks like a rule across the
+   page because what it stands for is absence. */
+.skip {
+  display: block;
+  width: 100%;
+  margin: 10px 0;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-top: 1px dashed #333944;
+  border-bottom: 1px dashed #333944;
+  border-radius: 0;
+  text-align: center;
+  cursor: pointer;
+}
+.skip:hover { color: #cfd4dc; background: rgba(255, 255, 255, 0.03); }
+.skip-text { margin: 6px 0 10px; color: #8f96a3; font-size: 14px; }
+
+.doc-identical { color: var(--keep); font-size: 15px; }
+/* word-break: normal undoes the break-all every .stage-pane .muted carries for
+   file paths; this line is a sentence and must wrap like one. */
+.doc-caveat { font-size: 12px; margin: 0; word-break: normal; }
+
+/* ---- Nothing to compare ---- */
+
+.stage-pane.opaque { gap: 14px; padding-top: 10px; }
+.opaque-note {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 14px;
+  color: #f0d9a0;
+  background: rgba(60, 48, 20, 0.92);
+  border: 1px solid #6b5620;
+  border-radius: 6px;
+}
+.opaque-cols { display: flex; gap: 16px; flex: 1; min-height: 0; overflow: auto; }
+.opaque-cols dl {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 14px 16px;
+  background: #101216;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.opaque-cols dt { color: var(--muted); font-size: 12px; margin-top: 10px; }
+.opaque-cols dt:first-child { margin-top: 0; }
+.opaque-cols dd {
+  margin: 2px 0 0;
+  color: #cfd4dc;
+  word-break: break-all;
+  font-variant-numeric: tabular-nums;
+}
+/* The pair of numbers people actually decide on. */
+.opaque-cols dd.same { color: var(--keep); }
+.opaque-cols dd.differs { color: #ffcc66; }
+
+@media (max-width: 760px) {
+  .opaque-cols { flex-direction: column; }
+  .doc-heads { flex-direction: column; gap: 2px; }
+  .doc-heads p:last-child { text-align: left; }
 }
 
 .viewer-note {

@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -201,6 +202,148 @@ func TestSnippetRefusesFileWithoutText(t *testing.T) {
 	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/snippet?path="+url.QueryEscape(target), nil))
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Errorf("status = %d, want 422", rec.Code)
+	}
+}
+
+// compareVia runs /api/compare over two paths and decodes the answer.
+func compareVia(t *testing.T, s *Server, a, b string) comparison {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/api/compare?a="+url.QueryEscape(a)+"&b="+url.QueryEscape(b), nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("compare status = %d, want 200", rec.Code)
+	}
+	var cmp comparison
+	if err := json.Unmarshal(rec.Body.Bytes(), &cmp); err != nil {
+		t.Fatalf("decode comparison: %v", err)
+	}
+	return cmp
+}
+
+// groupOfType returns the two paths of the first group of the given tier.
+func groupOfType(t *testing.T, payload reportPayload, kind string) (a, b string) {
+	t.Helper()
+	for _, g := range payload.Groups {
+		if g.Type == kind && len(g.Files) >= 2 {
+			return g.Files[0].Path, g.Files[1].Path
+		}
+	}
+	t.Fatalf("no %q group in the report", kind)
+	return "", ""
+}
+
+// TestCompareDocumentsReturnsAWordDiff is the phase in one test: two drafts of
+// the same report come back as the words that changed, not as two walls of
+// text for the user to read twice.
+func TestCompareDocumentsReturnsAWordDiff(t *testing.T) {
+	s, payload := scannedDocs(t)
+	a, b := groupOfType(t, payload, "similar")
+
+	cmp := compareVia(t, s, a, b)
+	if cmp.Kind != "doc" {
+		t.Fatalf("kind = %q, want doc (note: %q)", cmp.Kind, cmp.Note)
+	}
+	if cmp.Doc == nil {
+		t.Fatal("kind was doc but no diff came with it")
+	}
+	if len(cmp.Doc.Hunks) == 0 {
+		t.Error("no hunks: two documents the scan called similar-but-not-identical " +
+			"must differ somewhere, or the viewer shows nothing at all")
+	}
+	if cmp.Doc.ChangedWords == 0 {
+		t.Error("changedWords = 0 for two different documents")
+	}
+	if cmp.Doc.SameWords == 0 {
+		t.Error("sameWords = 0: the headline percentage would be 100% for two " +
+			"drafts of one report")
+	}
+	// The point of the tier: mostly the same document.
+	if cmp.Doc.ChangedWords > cmp.Doc.SameWords {
+		t.Errorf("more words changed (%d) than stayed (%d); these two were grouped "+
+			"as near-duplicates", cmp.Doc.ChangedWords, cmp.Doc.SameWords)
+	}
+}
+
+// TestCompareIdenticalDocumentsSaysSo covers the exact tier. There are no hunks
+// to draw, and a blank panel would read as a failure rather than an answer.
+func TestCompareIdenticalDocumentsSaysSo(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join("..", "..", "testdata", "docs", "text", "report.txt")
+	copyFixture(t, src, filepath.Join(dir, "report.txt"))
+	copyFixture(t, src, filepath.Join(dir, "backup", "report.txt"))
+
+	s := launcherServer()
+	if code := startScan(s, scanRequest{Path: dir, Kind: "docs"}); code != http.StatusAccepted {
+		t.Fatalf("scan start = %d, want 202", code)
+	}
+	if st := waitForScan(t, s); st.Error != "" {
+		t.Fatalf("scan errored: %s", st.Error)
+	}
+
+	payload := getReport(t, s)
+	a, b := groupOfType(t, payload, "exact")
+
+	cmp := compareVia(t, s, a, b)
+	if cmp.Kind != "doc" || cmp.Doc == nil {
+		t.Fatalf("kind = %q, doc = %v", cmp.Kind, cmp.Doc)
+	}
+	if len(cmp.Doc.Hunks) != 0 || cmp.Doc.ChangedWords != 0 {
+		t.Errorf("two byte-identical files produced %d hunks and %d changed words",
+			len(cmp.Doc.Hunks), cmp.Doc.ChangedWords)
+	}
+	if cmp.Doc.SameWords == 0 {
+		t.Error("sameWords = 0, so the panel cannot say how much text it checked")
+	}
+}
+
+// TestCompareRelatedFilesIsOpaque is the third panel. A related pair is matched
+// on names and sizes alone; answering with an empty diff would imply photocull
+// had read them and found nothing to report, which is the opposite of the truth.
+func TestCompareRelatedFilesIsOpaque(t *testing.T) {
+	s, payload := scannedDocs(t)
+	a, b := groupOfType(t, payload, "related")
+
+	cmp := compareVia(t, s, a, b)
+	if cmp.Kind != "opaque" {
+		t.Fatalf("kind = %q, want opaque", cmp.Kind)
+	}
+	if cmp.Doc != nil {
+		t.Error("an opaque comparison came with a diff attached")
+	}
+	if cmp.ReasonA == "" || cmp.ReasonB == "" {
+		t.Errorf("reasons = %q / %q; the panel has nothing to explain itself with",
+			cmp.ReasonA, cmp.ReasonB)
+	}
+	if cmp.Note == "" {
+		t.Error("no note: the user is shown two file listings and no reason for them")
+	}
+}
+
+// TestCompareFollowsTheScanNotTheFile records a decision that is easy to get
+// backwards. Documents mode deliberately walks every extension, so a photograph
+// can end up in a documents scan — and it is still part of a documents scan.
+// Sniffing the file instead would put a pixel diff inside a documents review,
+// answering a question the user did not ask, and would make the panel that
+// appears depend on which two files happened to land in a group.
+func TestCompareFollowsTheScanNotTheFile(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join("..", "..", "testdata", "exact", "original.jpg")
+	copyFixture(t, src, filepath.Join(dir, "photo.jpg"))
+	copyFixture(t, src, filepath.Join(dir, "backup", "photo.jpg"))
+
+	s := launcherServer()
+	if code := startScan(s, scanRequest{Path: dir, Kind: "docs"}); code != http.StatusAccepted {
+		t.Fatalf("scan start = %d, want 202", code)
+	}
+	if st := waitForScan(t, s); st.Error != "" {
+		t.Fatalf("scan errored: %s", st.Error)
+	}
+
+	a, b := groupOfType(t, getReport(t, s), "exact")
+	if cmp := compareVia(t, s, a, b); cmp.Kind != "opaque" {
+		t.Errorf("kind = %q, want opaque: two JPEGs inside a documents scan have no "+
+			"text, and a documents review is not the place for a pixel diff", cmp.Kind)
 	}
 }
 

@@ -11,7 +11,9 @@
 package dedupe
 
 import (
+	"runtime"
 	"sort"
+	"sync"
 
 	"photocull/internal/hashing"
 	"photocull/internal/scanner"
@@ -104,7 +106,31 @@ func GroupExact(files []scanner.FileMeta, keep KeepStrategy) []Group {
 func GroupSimilar(files []scanner.FileMeta, threshold int, keep KeepStrategy) []Group {
 	uf := newUnionFind(len(files))
 	unionByContentHash(files, uf)
+	unionBySimilarity(files, threshold, uf)
+	return buildGroups(files, uf, keep)
+}
 
+// parallelFrom is the population size above which the similarity pass is worth
+// splitting across cores. Below it the goroutines cost more than the work they
+// save, and a photo library of a few hundred files finishes in under a
+// millisecond either way.
+const parallelFrom = 4000
+
+// unionBySimilarity joins every pair of files whose fingerprints are within
+// threshold of each other.
+//
+// This used to be a plain double loop, and the comment here used to argue —
+// correctly, at the time — that optimising n(n-1)/2 XORs would be solving a
+// problem photocull did not have. Documents mode changed the input: it walks
+// every extension on purpose, so a whole-drive scan is a hundred thousand
+// candidates rather than a few thousand, and the measured cost went from a
+// millisecond to nearly ten seconds.
+//
+// Two changes, in the order that matters. First the index does the same search
+// with far fewer comparisons, which is the real win. Only then is it worth
+// spreading over cores, because parallelising a quadratic loop just buys a
+// constant factor on the wrong algorithm.
+func unionBySimilarity(files []scanner.FileMeta, threshold int, uf *unionFind) {
 	// Only files that actually produced a fingerprint can be compared.
 	candidates := make([]int, 0, len(files))
 	for i, f := range files {
@@ -112,22 +138,83 @@ func GroupSimilar(files []scanner.FileMeta, threshold int, keep KeepStrategy) []
 			candidates = append(candidates, i)
 		}
 	}
+	if len(candidates) < 2 {
+		return
+	}
 
-	// Pairwise comparison is O(n^2), but each comparison is a XOR and a
-	// popcount on a 64-bit word. For the thousands of photos this tool is
-	// aimed at that is a few million register operations — fast enough that
-	// optimising it (a BK-tree, or bucketing by hash prefix) would be solving
-	// a problem we do not have yet.
-	for a := 0; a < len(candidates); a++ {
-		for b := a + 1; b < len(candidates); b++ {
-			i, j := candidates[a], candidates[b]
-			if hashing.Distance(files[i].Fingerprint, files[j].Fingerprint) <= threshold {
-				uf.union(i, j)
+	// Indexed by position in candidates, not by position in files: the index
+	// treats every id it holds as a real fingerprint, and seeding it with zeros
+	// for the files that have none would make them all neighbours of each other.
+	index := hashing.NewIndex(threshold, len(candidates))
+	for a, i := range candidates {
+		index.Add(a, files[i].Fingerprint)
+	}
+
+	workers := runtime.NumCPU()
+	if len(candidates) < parallelFrom || workers < 2 {
+		joinRange(files, candidates, index.Search(), uf, 0, len(candidates))
+		return
+	}
+
+	// Each worker gets its own union-find over the same ids and the caller
+	// merges them, rather than every worker locking the shared one.
+	//
+	// The obvious alternative — collect the pairs and union them afterwards —
+	// is unbounded: a directory that really is all copies of one file yields
+	// n(n-1)/2 pairs, and a list of them is far larger than the files. A local
+	// union-find holds the same information in two ints per file however many
+	// pairs produced it, and merging is exact because the union of the workers'
+	// partitions is the transitive closure of everything they found.
+	locals := make([]*unionFind, workers)
+	var wg sync.WaitGroup
+	span := (len(candidates) + workers - 1) / workers
+	for w := range workers {
+		lo := w * span
+		if lo >= len(candidates) {
+			break
+		}
+		hi := min(lo+span, len(candidates))
+
+		local := newUnionFind(len(files))
+		locals[w] = local
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// One Searcher per goroutine: it carries the scratch space that
+			// keeps a file reachable through several bands from being offered
+			// twice, and sharing it would silently drop matches.
+			joinRange(files, candidates, index.Search(), local, lo, hi)
+		}()
+	}
+	wg.Wait()
+
+	for _, local := range locals {
+		if local == nil {
+			continue
+		}
+		for _, i := range candidates {
+			if root := local.find(i); root != i {
+				uf.union(i, root)
 			}
 		}
 	}
+}
 
-	return buildGroups(files, uf, keep)
+// joinRange searches the index for every candidate in [lo, hi) and unions what
+// it finds into uf.
+func joinRange(files []scanner.FileMeta, candidates []int, search *hashing.Searcher, uf *unionFind, lo, hi int) {
+	for a := lo; a < hi; a++ {
+		i := candidates[a]
+		search.Near(files[i].Fingerprint, func(b int) {
+			// Every pair comes back from both ends, and a file is its own
+			// nearest neighbour; taking only the forward half of each pair
+			// halves the unions without changing the partition.
+			if b > a {
+				uf.union(i, candidates[b])
+			}
+		})
+	}
 }
 
 // unionByContentHash joins every file that shares a SHA-256.
@@ -159,6 +246,12 @@ func buildGroups(files []scanner.FileMeta, uf *unionFind, keep KeepStrategy) []G
 	}
 
 	groups := make([]Group, 0, len(members))
+	// The sort below used to call ReclaimableBytes inside the comparator, and
+	// that method builds a fresh slice of copied FileMeta values on every call —
+	// two allocations per comparison, n log n comparisons. The totals are
+	// computed once here instead and carried alongside.
+	reclaimable := make([]int64, 0, len(members))
+
 	for _, groupFiles := range members {
 		if len(groupFiles) < 2 {
 			continue
@@ -168,24 +261,42 @@ func buildGroups(files []scanner.FileMeta, uf *unionFind, keep KeepStrategy) []G
 			return groupFiles[i].Path < groupFiles[j].Path
 		})
 
-		groups = append(groups, Group{
+		g := Group{
 			ID:        groupID(groupFiles),
 			Type:      classify(groupFiles),
 			Files:     groupFiles,
 			KeepIndex: keep(groupFiles),
-		})
+		}
+		groups = append(groups, g)
+		reclaimable = append(reclaimable, g.ReclaimableBytes())
 	}
 
 	// Biggest win first: the groups that free the most space are the ones
 	// worth a human's attention.
-	sort.Slice(groups, func(i, j int) bool {
-		if groups[i].ReclaimableBytes() != groups[j].ReclaimableBytes() {
-			return groups[i].ReclaimableBytes() > groups[j].ReclaimableBytes()
-		}
-		return groups[i].ID < groups[j].ID
-	})
+	sort.Sort(byReclaimable{groups: groups, bytes: reclaimable})
 
 	return groups
+}
+
+// byReclaimable orders groups by the space deleting their duplicates would
+// free, carrying the precomputed totals so the comparator never recomputes one.
+type byReclaimable struct {
+	groups []Group
+	bytes  []int64
+}
+
+func (b byReclaimable) Len() int { return len(b.groups) }
+
+func (b byReclaimable) Less(i, j int) bool {
+	if b.bytes[i] != b.bytes[j] {
+		return b.bytes[i] > b.bytes[j]
+	}
+	return b.groups[i].ID < b.groups[j].ID
+}
+
+func (b byReclaimable) Swap(i, j int) {
+	b.groups[i], b.groups[j] = b.groups[j], b.groups[i]
+	b.bytes[i], b.bytes[j] = b.bytes[j], b.bytes[i]
 }
 
 // classify reports whether a group is provably identical or merely alike.

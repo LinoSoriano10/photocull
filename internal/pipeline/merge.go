@@ -118,14 +118,20 @@ func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 		return nil, err
 	}
 
+	// The library is indexed rather than kept as a flat list, because otherwise
+	// every source file is compared against every library fingerprint: a small
+	// import into a large library costs sources × library. See hashing.Index —
+	// it narrows the field and the real distance still decides, so this is the
+	// same answer, found sooner.
 	baseHashes := make(map[string]bool, len(baseRes.Files))
-	var baseFingerprints []uint64
+	baseIndex := hashing.NewIndex(threshold, len(baseRes.Files))
+	baseSearch := baseIndex.Search()
 	for _, f := range baseRes.Files {
 		if f.SHA256 != "" {
 			baseHashes[f.SHA256] = true
 		}
 		if f.HasFingerprint {
-			baseFingerprints = append(baseFingerprints, f.Fingerprint)
+			baseIndex.Add(baseIndex.Len(), f.Fingerprint)
 		}
 	}
 
@@ -139,9 +145,11 @@ func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 	}
 
 	// Track what we have already accepted as new, so two copies of the same
-	// new photo in the source do not both get imported.
+	// new photo in the source do not both get imported. This index grows as the
+	// loop runs, which is the one case where a Searcher outlives an Add.
 	acceptedHashes := make(map[string]bool)
-	var acceptedFingerprints []uint64
+	acceptedIndex := hashing.NewIndex(threshold, len(srcRes.Files))
+	acceptedSearch := acceptedIndex.Search()
 
 	for _, f := range srcRes.Files {
 		// Already in the library?
@@ -149,7 +157,7 @@ func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 			analysis.Duplicates++
 			continue
 		}
-		if opts.Similar && f.HasFingerprint && nearAny(f.Fingerprint, baseFingerprints, threshold) {
+		if opts.Similar && f.HasFingerprint && nearAny(baseSearch, f.Fingerprint) {
 			analysis.Duplicates++
 			continue
 		}
@@ -158,7 +166,7 @@ func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 			analysis.Duplicates++
 			continue
 		}
-		if opts.Similar && f.HasFingerprint && nearAny(f.Fingerprint, acceptedFingerprints, threshold) {
+		if opts.Similar && f.HasFingerprint && nearAny(acceptedSearch, f.Fingerprint) {
 			analysis.Duplicates++
 			continue
 		}
@@ -168,7 +176,7 @@ func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 			acceptedHashes[f.SHA256] = true
 		}
 		if f.HasFingerprint {
-			acceptedFingerprints = append(acceptedFingerprints, f.Fingerprint)
+			acceptedIndex.Add(acceptedIndex.Len(), f.Fingerprint)
 		}
 	}
 
@@ -182,14 +190,17 @@ func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 	return analysis, nil
 }
 
-// nearAny reports whether h is within threshold of any hash in hs.
-func nearAny(h uint64, hs []uint64, threshold int) bool {
-	for _, b := range hs {
-		if hashing.Distance(h, b) <= threshold {
-			return true
-		}
-	}
-	return false
+// nearAny reports whether the index behind search holds any fingerprint within
+// its threshold of h.
+//
+// Near has no early exit — it offers every neighbour — but the question here is
+// only whether there is one, and stopping at the first is what a duplicate
+// check wants. The flag is set from inside the callback rather than returned,
+// which reads oddly and is the price of a visitor that cannot be broken out of.
+func nearAny(search *hashing.Searcher, h uint64) bool {
+	found := false
+	search.Near(h, func(int) { found = true })
+	return found
 }
 
 // CopyInto copies the given files into an "added" subfolder of the library,

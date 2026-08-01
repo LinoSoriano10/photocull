@@ -97,6 +97,38 @@ func TestMergeDeduplicatesWithinSource(t *testing.T) {
 	}
 }
 
+// TestMergeCollapsesSimilarWithinSource covers the half of the similarity
+// check that grows as the import runs.
+//
+// The library's fingerprints are all known before the loop starts; the ones
+// already accepted from the source are not, so that index is added to while it
+// is being searched. It is the only place in photocull where those two happen
+// together, and getting it wrong imports the same photo twice — which is
+// exactly what the user asked the tool to prevent.
+func TestMergeCollapsesSimilarWithinSource(t *testing.T) {
+	base := t.TempDir()
+	source := t.TempDir()
+
+	writeImage(t, "similar/different.jpg", filepath.Join(base, "have.jpg"))
+	// The same photo twice in the source, one of them resized. Different bytes,
+	// so the content hash cannot collapse them and only the fingerprint can.
+	writeImage(t, "similar/source.jpg", filepath.Join(source, "a.jpg"))
+	writeImage(t, "similar/source_resized.jpg", filepath.Join(source, "sub", "b.jpg"))
+
+	res, err := Merge(context.Background(), MergeOptions{
+		Base: base, Source: source, Similar: true, Threshold: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.New) != 1 {
+		t.Errorf("New = %d, want 1: the resized copy should not be imported too", len(res.New))
+	}
+	if res.Duplicates != 1 {
+		t.Errorf("Duplicates = %d, want 1", res.Duplicates)
+	}
+}
+
 // TestMergeInDocumentsModeReadsEveryFile is the merge half of the kind seam.
 // Before it, Merge called scanner.Scan with no extractor at all, so "add to
 // library" silently stayed on photographs however the request was phrased: a

@@ -4,16 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
-	"photocull/internal/dedupe"
+	"photocull/internal/doctext"
+	"photocull/internal/fingerprint"
 	"photocull/internal/imageutil"
 	"photocull/internal/osdialog"
 	"photocull/internal/pipeline"
 	"photocull/internal/report"
 	"photocull/internal/scanner"
+	"photocull/internal/textdiff"
 )
 
 // reportPayload is what the page renders. Paths are sent both absolute (for the
@@ -50,12 +55,21 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, payload)
 }
 
-// scanRequest is the body of POST /api/scan: the mode and folder chosen on the
-// launcher page.
+// scanRequest is the body of POST /api/scan: the kind, mode and folder chosen
+// on the launcher page.
 type scanRequest struct {
-	Path      string `json:"path"`
-	Similar   bool   `json:"similar"`
-	Threshold int    `json:"threshold"`
+	Path string `json:"path"`
+
+	// Kind is "photos" or "docs". Empty means photos — the page that shipped
+	// before documents existed sent no such field, and it must keep working.
+	Kind string `json:"kind"`
+
+	// Ext narrows the scan to these extensions. Empty means whatever the kind
+	// looks at, which for documents is deliberately *everything*.
+	Ext []string `json:"ext"`
+
+	Similar   bool `json:"similar"`
+	Threshold int  `json:"threshold"`
 }
 
 // handleScan starts a scan in the background and returns immediately, so a
@@ -76,10 +90,11 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "please choose a folder"})
 		return
 	}
+	// An unset threshold is left at zero rather than filled in here, so the
+	// pipeline resolves it from the kind. Photos and documents want different
+	// numbers, and deciding that in two places is how they come to disagree.
 	if !req.Similar {
 		req.Threshold = 0
-	} else if req.Threshold <= 0 {
-		req.Threshold = dedupe.DefaultThreshold
 	}
 
 	s.scanMu.Lock()
@@ -111,10 +126,12 @@ func (s *Server) runScanJob(ctx context.Context, job *scanJob, req scanRequest) 
 	defer job.cancel()
 
 	an, err := pipeline.Run(ctx, pipeline.Options{
-		Root:      req.Path,
-		Similar:   req.Similar,
-		Threshold: req.Threshold,
-		Progress:  job.progress,
+		Root:       req.Path,
+		Kind:       req.Kind,
+		Extensions: req.Ext,
+		Similar:    req.Similar,
+		Threshold:  req.Threshold,
+		Progress:   job.progress,
 	})
 
 	// Load the report first and mark the job done second. The page polls status
@@ -200,7 +217,7 @@ func (s *Server) handleScanCancel(w http.ResponseWriter, r *http.Request) {
 
 // handleBrowse opens the native folder picker and returns the chosen path.
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
-	path, err := s.pickFolder("Choose the photo folder to scan")
+	path, err := s.pickFolder("Choose the folder to scan")
 	switch {
 	case errors.Is(err, osdialog.ErrCancelled):
 		writeJSON(w, http.StatusOK, map[string]string{"path": ""})
@@ -271,11 +288,37 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 	s.serveImage(w, raw, imageutil.PreviewSize)
 }
 
+// lookup resolves raw to an absolute path and reports whether set contains it.
+// Callers must hold s.mu.
+func lookup(set map[string]bool, raw string) (string, bool) {
+	abs, err := filepath.Abs(raw)
+	if err != nil || !set[abs] {
+		return "", false
+	}
+	return abs, true
+}
+
+// resolveAllowed turns a request's raw path into an absolute one and reports
+// whether the scan ever touched it.
+//
+// Every endpoint that opens a file off the disk goes through here. Membership
+// in s.allowed *is* photocull's entire file-access security model — there is no
+// path-prefix check, which is also what makes a "../.." escape pointless — so
+// it lives in one function precisely so it can be read, tested and pointed at.
+//
+// It takes the lock itself: the browser fires image and comparison requests
+// concurrently, and a delete running at the same time rewrites these sets.
+func (s *Server) resolveAllowed(raw string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return lookup(s.allowed, raw)
+}
+
 // serveImage renders one scanned file at the requested size, refusing any path
 // that was not part of the scan.
 func (s *Server) serveImage(w http.ResponseWriter, raw string, size int) {
-	abs, err := filepath.Abs(raw)
-	if err != nil || !s.allowed[abs] {
+	abs, ok := s.resolveAllowed(raw)
+	if !ok {
 		// Do not reveal whether the file exists; just refuse.
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
@@ -288,6 +331,326 @@ func (s *Server) serveImage(w http.ResponseWriter, raw string, size int) {
 	}
 
 	w.Header().Set("Content-Type", "image/jpeg")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Write(data)
+}
+
+// maxSnippet caps how much text one card may ask for. A card is a glance, not
+// a reader: past a few thousand characters the user is scrolling a document
+// inside a thumbnail, which is the wrong tool for that job.
+const maxSnippet = 4000
+
+// defaultSnippet is what a card gets when it does not ask for a length.
+const defaultSnippet = 400
+
+// handleSnippet serves the opening text of a scanned document, so a card can
+// show what is *in* the file rather than only its name.
+//
+// It is the documents answer to /api/thumb, and it goes through the same guard.
+// Unlike thumbnails it is not cached: ThumbCache exists because decoding and
+// resizing a JPEG is expensive, whereas this re-reads a few hundred characters
+// off a file the operating system almost certainly still has in its page cache.
+// Caching it would buy nothing and would have to be invalidated on delete.
+func (s *Server) handleSnippet(w http.ResponseWriter, r *http.Request) {
+	raw := r.URL.Query().Get("path")
+	if raw == "" {
+		http.Error(w, "missing path", http.StatusBadRequest)
+		return
+	}
+
+	abs, ok := s.resolveAllowed(raw)
+	if !ok {
+		// Same as the image endpoints: do not reveal whether the file exists.
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	n := defaultSnippet
+	if v, err := strconv.Atoi(r.URL.Query().Get("n")); err == nil && v > 0 {
+		n = min(v, maxSnippet)
+	}
+
+	text, err := readSnippet(abs, n)
+	if err != nil {
+		// A file photocull cannot read inside is an ordinary outcome in
+		// documents mode — a .zip, a scanned PDF, a legacy .doc — so this
+		// mirrors serveImage's 422 rather than pretending something broke. The
+		// page falls back to showing the file's details.
+		http.Error(w, "no text in this file", http.StatusUnprocessableEntity)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	io.WriteString(w, text)
+}
+
+// documentText reads one file's text, or says why there is none.
+//
+// The two results are the two outcomes that matter to the page, and neither is
+// an error: a file photocull cannot read inside is ordinary in documents mode,
+// and the reason is the useful thing to show in its place. reason is empty
+// exactly when text is usable.
+func documentText(path string) (text, reason string) {
+	f, err := os.Open(path)
+	if err != nil {
+		// Phrased for the person deciding, like doctext's own reasons. The
+		// underlying error is not shown: it names an absolute path the page
+		// already displays, and adds nothing to the decision.
+		return "", "this file could not be opened"
+	}
+	defer f.Close()
+
+	out, err := doctext.Extract(f, path)
+	if err != nil {
+		return "", "this file is damaged, or is not the format its name claims"
+	}
+	if !out.Usable {
+		return "", out.Reason
+	}
+	return out.Text, ""
+}
+
+// readSnippet extracts a document's text and returns at most n runes of it.
+func readSnippet(path string, n int) (string, error) {
+	text, reason := documentText(path)
+	if reason != "" {
+		return "", errors.New("webui: " + reason)
+	}
+
+	// Cut on runes, not bytes: slicing UTF-8 by byte count lands mid-character
+	// and the browser renders a replacement glyph at the end of every snippet.
+	runes := []rune(text)
+	if len(runes) > n {
+		return string(runes[:n]) + "…", nil
+	}
+	return string(runes), nil
+}
+
+// comparison answers "is there anything here worth looking at?" before the page
+// fetches a single pixel.
+//
+// It deliberately does not echo the two files' details back: the page already
+// holds them from /api/report, and sending them twice would be one more place
+// for the two views to disagree about what a file is.
+type comparison struct {
+	// Kind selects which panel the page renders: "image" for two photographs,
+	// "doc" for two documents whose text came out, and "opaque" for a pair
+	// photocull cannot read inside at all — a scanned PDF, a .zip, a legacy
+	// .doc. The third is not a failure of the other two, it is the honest
+	// answer for the tier that was matched on names and sizes alone.
+	Kind  string     `json:"kind"`
+	Image *imageDiff `json:"image,omitempty"`
+	Doc   *docDiff   `json:"doc,omitempty"`
+
+	// ReasonA and ReasonB say why each file yielded no text, for the opaque
+	// panel. They are doctext's own wording, which is already phrased for the
+	// person deciding whether to delete the file.
+	ReasonA string `json:"reasonA,omitempty"`
+	ReasonB string `json:"reasonB,omitempty"`
+
+	// Note explains, in the user's words, why there is no comparison to show.
+	Note string `json:"note,omitempty"`
+}
+
+// docDiff is the wire shape of a word-level comparison. It mirrors
+// textdiff.Diff rather than reusing it, for the same reason imageDiff mirrors
+// imageutil's result: the diff package has no business knowing what JSON the
+// page happens to want this week.
+type docDiff struct {
+	Hunks        []hunkView `json:"hunks"`
+	SameWords    int        `json:"sameWords"`
+	ChangedWords int        `json:"changedWords"`
+
+	// Trailing is the identical run after the last change, reported like the
+	// runs between hunks so the page can say "nothing changed after this".
+	TrailingWords int    `json:"trailingWords,omitempty"`
+	Trailing      string `json:"trailing,omitempty"`
+
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+type hunkView struct {
+	Before string `json:"before,omitempty"`
+	Del    string `json:"del,omitempty"`
+	Ins    string `json:"ins,omitempty"`
+	After  string `json:"after,omitempty"`
+
+	// SkippedWords counts the identical words collapsed before this hunk, and
+	// Skipped holds them. The text is sent rather than fetched on demand
+	// because expanding a collapsed run is a click on something already on
+	// screen, and a round trip there feels like a fault.
+	SkippedWords int    `json:"skippedWords,omitempty"`
+	Skipped      string `json:"skipped,omitempty"`
+}
+
+type imageDiff struct {
+	// Ratio is the fraction of pixels that differ, 0 to 1.
+	Ratio float64 `json:"ratio"`
+
+	// Width and Height are the grid both photos were scaled onto, so the page
+	// can position the box over the heatmap.
+	Width  int `json:"width"`
+	Height int `json:"height"`
+
+	// Box encloses the change. Absent when nothing differs.
+	Box *diffBox `json:"box,omitempty"`
+}
+
+type diffBox struct {
+	X int `json:"x"`
+	Y int `json:"y"`
+	W int `json:"w"`
+	H int `json:"h"`
+}
+
+// resolvePair validates both halves of a comparison request.
+//
+// Both paths are checked. Validating only the one that happens to be read first
+// would leave the other as an open door to any file on the disk, which is the
+// easy mistake to make here and the reason this is not written inline twice.
+func (s *Server) resolvePair(r *http.Request) (a, b string, ok bool) {
+	a, okA := s.resolveAllowed(r.URL.Query().Get("a"))
+	b, okB := s.resolveAllowed(r.URL.Query().Get("b"))
+	return a, b, okA && okB
+}
+
+// scanKind reports what the loaded analysis was about.
+func (s *Server) scanKind() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stats.Kind
+}
+
+// handleCompare reports how two scanned files differ.
+func (s *Server) handleCompare(w http.ResponseWriter, r *http.Request) {
+	a, b, ok := s.resolvePair(r)
+	if !ok {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	// Which comparison to run is decided by what was scanned, not by what the
+	// files look like. Documents mode deliberately walks every extension, so a
+	// .jpg sitting in a documents folder is part of a documents scan and its
+	// group is a documents group — offering a pixel diff there would be
+	// answering a question nobody asked.
+	if s.scanKind() == string(fingerprint.Docs) {
+		s.compareDocuments(w, a, b)
+		return
+	}
+
+	diff, err := imageutil.Compare(a, b)
+	if err != nil {
+		// A photo photocull could not decode is still a real duplicate
+		// candidate — it was grouped by content hash — so this is a note, not
+		// an error. The page falls back to comparing file details.
+		writeJSON(w, http.StatusOK, comparison{
+			Kind: "image",
+			Note: "One of these files could not be decoded as an image, so they can only be compared by name, size and date.",
+		})
+		return
+	}
+
+	if diff.AspectMismatch {
+		writeJSON(w, http.StatusOK, comparison{
+			Kind: "image",
+			Note: "These photos are framed differently — one of them is cropped — so they cannot be laid over each other. Compare them side by side instead.",
+		})
+		return
+	}
+
+	out := &imageDiff{Ratio: diff.Ratio, Width: diff.Width, Height: diff.Height}
+	if !diff.Box.Empty() {
+		out.Box = &diffBox{
+			X: diff.Box.Min.X,
+			Y: diff.Box.Min.Y,
+			W: diff.Box.Dx(),
+			H: diff.Box.Dy(),
+		}
+	}
+	writeJSON(w, http.StatusOK, comparison{Kind: "image", Image: out})
+}
+
+// compareDocuments answers /api/compare for a documents scan.
+//
+// Both files are re-read here rather than remembered from the scan. Keeping
+// every document's text would multiply a scan's memory by the size of the
+// documents themselves — for text that is only ever looked at when somebody
+// opens one pair out of hundreds. Two file reads in response to a click is the
+// cheaper side of that trade by a wide margin.
+func (s *Server) compareDocuments(w http.ResponseWriter, a, b string) {
+	textA, reasonA := documentText(a)
+	textB, reasonB := documentText(b)
+
+	if reasonA != "" || reasonB != "" {
+		// This is the related tier's own panel. There is no text to compare and
+		// pretending otherwise would be worse than saying so: the page falls
+		// back to laying the two files' details side by side, which for a pair
+		// matched on name and size is exactly the evidence there is.
+		writeJSON(w, http.StatusOK, comparison{
+			Kind:    "opaque",
+			ReasonA: reasonA,
+			ReasonB: reasonB,
+			Note:    "photocull cannot read text inside at least one of these files, so there is nothing to compare word by word.",
+		})
+		return
+	}
+
+	d := textdiff.Words(textA, textB)
+
+	hunks := make([]hunkView, 0, len(d.Hunks))
+	for _, h := range d.Hunks {
+		hunks = append(hunks, hunkView{
+			Before:       h.Before,
+			Del:          h.Del,
+			Ins:          h.Ins,
+			After:        h.After,
+			SkippedWords: h.SkippedWords,
+			Skipped:      h.Skipped,
+		})
+	}
+
+	writeJSON(w, http.StatusOK, comparison{
+		Kind: "doc",
+		Doc: &docDiff{
+			Hunks:         hunks,
+			SameWords:     d.SameWords,
+			ChangedWords:  d.ChangedWords,
+			TrailingWords: d.TrailingWords,
+			Trailing:      d.Trailing,
+			Truncated:     d.Truncated,
+		},
+	})
+}
+
+// handleImageDiff renders the difference map between two scanned photos.
+//
+// It is a separate endpoint from /api/compare, and only the heatmap tab asks
+// for it, so the second decode-and-scale of both photos is paid for only when
+// somebody actually looks.
+func (s *Server) handleImageDiff(w http.ResponseWriter, r *http.Request) {
+	a, b, ok := s.resolvePair(r)
+	if !ok {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	diff, err := imageutil.Compare(a, b)
+	if err != nil {
+		http.Error(w, "cannot compare these images", http.StatusUnprocessableEntity)
+		return
+	}
+
+	data, err := diff.HeatmapPNG()
+	if err != nil {
+		http.Error(w, "no difference map for these images", http.StatusUnprocessableEntity)
+		return
+	}
+
+	// PNG, not JPEG: the map is flat colour over large areas, which JPEG would
+	// smear into a halo around exactly the edges the user is trying to judge.
+	w.Header().Set("Content-Type", "image/png")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Write(data)
 }
@@ -326,8 +689,8 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	var permitted []string
 	var failed []string
 	for _, p := range req.Paths {
-		abs, err := filepath.Abs(p)
-		if err != nil || !s.deletable[abs] {
+		abs, ok := lookup(s.deletable, p)
+		if !ok {
 			failed = append(failed, p)
 			continue
 		}
@@ -384,36 +747,21 @@ func (s *Server) forget(paths []string) {
 		kept = append(kept, g)
 	}
 	s.groups = kept
-	s.stats = recomputeStats(s.stats, s.groups)
-}
-
-// recomputeStats refreshes the reclaimable figures after a deletion, leaving
-// the scan-time totals (files scanned, bytes) untouched.
-func recomputeStats(base report.Stats, groups []dedupe.Group) report.Stats {
-	base.Groups = len(groups)
-	base.ExactGroups, base.SimilarGroups = 0, 0
-	base.DuplicateFiles = 0
-	base.ReclaimableBytes = 0
-	for _, g := range groups {
-		switch g.Type {
-		case dedupe.Exact:
-			base.ExactGroups++
-		case dedupe.Similar:
-			base.SimilarGroups++
-		}
-		base.DuplicateFiles += len(g.Files) - 1
-		base.ReclaimableBytes += g.ReclaimableBytes()
-	}
-	return base
+	s.stats = report.Recount(s.stats, s.groups)
 }
 
 // --- Add to library (merge) ---
 
 type mergeRequest struct {
-	Base      string `json:"base"`
-	Source    string `json:"source"`
-	Similar   bool   `json:"similar"`
-	Threshold int    `json:"threshold"`
+	Base   string `json:"base"`
+	Source string `json:"source"`
+
+	// Kind and Ext mean the same here as on a scan; see scanRequest.
+	Kind string   `json:"kind"`
+	Ext  []string `json:"ext"`
+
+	Similar   bool `json:"similar"`
+	Threshold int  `json:"threshold"`
 }
 
 // handleMerge starts, in the background, the comparison of a source folder
@@ -435,8 +783,6 @@ func (s *Server) handleMerge(w http.ResponseWriter, r *http.Request) {
 	}
 	if !req.Similar {
 		req.Threshold = 0
-	} else if req.Threshold <= 0 {
-		req.Threshold = dedupe.DefaultThreshold
 	}
 
 	s.scanMu.Lock()
@@ -458,11 +804,13 @@ func (s *Server) runMergeJob(ctx context.Context, job *scanJob, req mergeRequest
 	defer job.cancel()
 
 	result, err := pipeline.Merge(ctx, pipeline.MergeOptions{
-		Base:      req.Base,
-		Source:    req.Source,
-		Similar:   req.Similar,
-		Threshold: req.Threshold,
-		Progress:  job.progress,
+		Base:       req.Base,
+		Source:     req.Source,
+		Kind:       req.Kind,
+		Extensions: req.Ext,
+		Similar:    req.Similar,
+		Threshold:  req.Threshold,
+		Progress:   job.progress,
 	})
 
 	if err != nil {
@@ -527,15 +875,19 @@ func (s *Server) handleMergeStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
-// mergeResultPayload is the list of new photos plus the counts around them.
+// mergeResultPayload is the list of new files plus the counts around them.
 type mergeResultPayload struct {
 	BaseRoot     string     `json:"baseRoot"`
 	SourceRoot   string     `json:"sourceRoot"`
 	New          []fileView `json:"new"`
 	Duplicates   int        `json:"duplicates"`
-	BaseImages   int        `json:"baseImages"`
-	SourceImages int        `json:"sourceImages"`
+	BaseFiles    int        `json:"baseFiles"`
+	SourceFiles  int        `json:"sourceFiles"`
 	ImportSubdir string     `json:"importSubdir"`
+
+	// Kind lets the page label the result in the user's terms — photos or
+	// documents — without having to remember what it asked for.
+	Kind string `json:"kind,omitempty"`
 }
 
 func (s *Server) handleMergeResult(w http.ResponseWriter, r *http.Request) {
@@ -571,9 +923,10 @@ func (s *Server) handleMergeResult(w http.ResponseWriter, r *http.Request) {
 		SourceRoot:   result.SourceRoot,
 		New:          newViews,
 		Duplicates:   result.Duplicates,
-		BaseImages:   result.BaseImages,
-		SourceImages: result.SourceImages,
+		BaseFiles:    result.BaseFiles,
+		SourceFiles:  result.SourceFiles,
 		ImportSubdir: pipeline.ImportSubdir,
+		Kind:         result.Kind,
 	})
 }
 

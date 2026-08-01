@@ -79,6 +79,9 @@ main { padding: 20px 24px 80px; display: grid; gap: 24px; }
 }
 .group-head .tag.similar { color: #ffcc66; border-color: #4a4326; }
 .group-head .tag.exact { color: var(--keep); border-color: #234a33; }
+/* Deliberately the coolest, least urgent of the three: a related group is a
+   guess, and it should not look like a finding. */
+.group-head .tag.related { color: #9fb6ff; border-color: #2b3a63; }
 
 .group-hint { margin: 0 0 12px; font-size: 13px; }
 
@@ -87,6 +90,9 @@ main { padding: 20px 24px 80px; display: grid; gap: 24px; }
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 16px;
 }
+/* Text needs a longer line than a thumbnail does; at 240px a snippet breaks
+   every four or five words and stops reading like prose. */
+.files.docs { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 
 figure.file { margin: 0; }
 
@@ -102,6 +108,28 @@ figure.file { margin: 0; }
 }
 .thumb-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .thumb-wrap:hover { border-color: var(--accent); }
+
+/* A document card puts the opening lines of the file where the thumbnail goes.
+   It scrolls rather than clipping, because the first paragraph of two drafts is
+   often word-for-word identical and the difference is a little further down. */
+.file.doc .thumb-wrap { aspect-ratio: 4 / 3; }
+/* The card is both a thing to read and a button to press, so the compare
+   affordance stays visible instead of appearing on hover: the text cursor over
+   the snippet would otherwise be the only signal, and it says the opposite. */
+.file.doc .zoom { opacity: 1; }
+.snippet {
+  margin: 0;
+  height: 100%;
+  overflow: auto;
+  padding: 26px 10px 10px;
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  cursor: text;
+}
+.snippet.none { color: var(--muted); font-style: italic; }
+.file.picked .snippet { opacity: 0.5; }
 .file.picked .thumb-wrap { border-color: var(--danger); }
 .file.picked img { opacity: 0.5; }
 .file.tocopy .thumb-wrap { border-color: var(--keep); }
@@ -180,6 +208,10 @@ figcaption { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
 .card h2 { font-size: 14px; margin: 22px 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
 
 .modes { display: grid; gap: 10px; }
+/* Side by side rather than stacked, so the kind question does not read as three
+   more entries in the list of modes underneath it. */
+.modes.kinds { grid-template-columns: 1fr 1fr; }
+@media (max-width: 520px) { .modes.kinds { grid-template-columns: 1fr; } }
 .mode {
   display: flex;
   gap: 12px;
@@ -264,29 +296,233 @@ button.secondary { background: var(--panel-2); color: var(--text); border: 1px s
 /* ---- Review header extras ---- */
 .review-top { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 
-/* ---- Lightbox (full-size comparison) ---- */
-.lightbox {
+/* ---- Comparison viewer ---- */
+.viewer {
   position: fixed;
   inset: 0;
   z-index: 100;
   display: flex;
   flex-direction: column;
+  gap: 10px;
+  padding: 14px 18px 18px;
+  /* Opaque, and dark in both themes: a translucent overlay lets the sticky
+     header show through the toolbar, and photographs are judged against black
+     anyway. */
+  background: #08090c;
+}
+
+.viewer-bar { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.viewer-modes { display: flex; gap: 6px; }
+.vmode {
+  padding: 6px 12px;
+  font-size: 13px;
+  color: #cfd4dc;
+  background: #22262f;
+  border: 1px solid #333944;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.vmode:hover:not(:disabled) { background: #2b3039; }
+.vmode.active { color: #fff; background: var(--accent); border-color: var(--accent); }
+.vmode:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.verdict { flex: 1; color: #eee; font-size: 14px; }
+#viewer-close { margin-left: auto; }
+
+.stage { position: relative; flex: 1; min-height: 0; display: flex; }
+.stage-pane { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; }
+.stage-pane.side { flex-direction: row; gap: 14px; }
+.stage-pane.side figure { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; margin: 0; }
+.stage-pane.side figcaption,
+.stage-pane .muted { color: #b9bfc9; font-size: 13px; text-align: center; word-break: break-all; }
+
+/* The frame is the fixed window every photo is transformed inside, so both
+   panes stay the same size no matter how far the images are zoomed. */
+.frame {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  border-radius: 6px;
+  background: #000;
+}
+.frame img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  transform-origin: center center;
+  /* No transition: a zoom that animates lags behind the wheel and makes fine
+     comparison feel imprecise. */
+}
+.stage-pane.side .frame { cursor: grab; }
+.stage-pane.side .frame:active { cursor: grabbing; }
+
+/* Wipe and blink stack both photos in exactly the same place. */
+.stack-frame { cursor: ew-resize; }
+.stack-frame .clip { position: absolute; inset: 0; }
+.wipe-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+}
+.wipe-handle::after {
+  content: "↔";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 28px;
+  height: 28px;
+  display: flex;
   align-items: center;
   justify-content: center;
-  gap: 12px;
-  padding: 24px;
-  background: rgba(0, 0, 0, 0.9);
-  cursor: zoom-out;
+  font-size: 14px;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 50%;
 }
-.lightbox img {
-  max-width: 95vw;
-  max-height: 82vh;
-  object-fit: contain;
+
+/* ---- Document comparison ---- */
+
+.stage-pane.doc { gap: 10px; }
+/* The two captions sit at the outer edges, so which document is on which side
+   of every change reads off the header without being spelled out per hunk. */
+/* The two captions sit against the outer edges, so which document is on which
+   side of every change reads off the header without being spelled out per hunk.
+   Both selectors have to out-specify the `.stage-pane .muted` centring above. */
+.doc-heads { display: flex; gap: 14px; }
+.doc-heads p { flex: 1; min-width: 0; margin: 0; }
+.doc-heads p:first-child { text-align: left; }
+.doc-heads p:last-child { text-align: right; }
+
+.doc-diff {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px 20px;
   border-radius: 6px;
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.6);
+  background: #101216;
+  /* Prose, not code: this is read as sentences, and a monospace font at this
+     length is slower to read for no gain. */
+  font-size: 15px;
+  line-height: 1.7;
 }
-#lightbox-caption { color: #eee; font-size: 14px; margin: 0; text-align: center; word-break: break-all; max-width: 90vw; }
-.lightbox-close { color: #888; font-size: 12px; }
+.doc-diff p { margin: 0 0 4px; color: #cfd4dc; }
+
+/* Colour carries the meaning here, so it is not the only thing that does: the
+   removed side is struck through and the added side underlined, which survives
+   both colour blindness and a black-and-white screenshot. */
+.doc-diff del {
+  background: rgba(255, 90, 90, 0.22);
+  color: #ffc9c9;
+  text-decoration: line-through;
+  padding: 1px 3px;
+  border-radius: 3px;
+}
+.doc-diff ins {
+  background: rgba(56, 193, 114, 0.22);
+  color: #b6f0cd;
+  text-decoration: underline;
+  padding: 1px 3px;
+  border-radius: 3px;
+}
+
+/* A collapsed run is a button because it opens; it looks like a rule across the
+   page because what it stands for is absence. */
+.skip {
+  display: block;
+  width: 100%;
+  margin: 10px 0;
+  padding: 4px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--muted);
+  background: transparent;
+  border: 0;
+  border-top: 1px dashed #333944;
+  border-bottom: 1px dashed #333944;
+  border-radius: 0;
+  text-align: center;
+  cursor: pointer;
+}
+.skip:hover { color: #cfd4dc; background: rgba(255, 255, 255, 0.03); }
+.skip-text { margin: 6px 0 10px; color: #8f96a3; font-size: 14px; }
+
+.doc-identical { color: var(--keep); font-size: 15px; }
+/* Written .stage-pane .doc-caveat to beat `.stage-pane .muted`, whose
+   word-break: break-all is right for file paths and wrong for a sentence: it
+   wraps this one mid-word. */
+.stage-pane .doc-caveat { font-size: 12px; margin: 0; word-break: normal; }
+
+/* ---- Nothing to compare ---- */
+
+.stage-pane.opaque { gap: 14px; padding-top: 10px; }
+.opaque-note {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 14px;
+  color: #f0d9a0;
+  background: rgba(60, 48, 20, 0.92);
+  border: 1px solid #6b5620;
+  border-radius: 6px;
+}
+.opaque-cols { display: flex; gap: 16px; flex: 1; min-height: 0; overflow: auto; }
+.opaque-cols dl {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 14px 16px;
+  background: #101216;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.opaque-cols dt { color: var(--muted); font-size: 12px; margin-top: 10px; }
+.opaque-cols dt:first-child { margin-top: 0; }
+.opaque-cols dd {
+  margin: 2px 0 0;
+  color: #cfd4dc;
+  word-break: break-all;
+  font-variant-numeric: tabular-nums;
+}
+/* The pair of numbers people actually decide on. */
+.opaque-cols dd.same { color: var(--keep); }
+.opaque-cols dd.differs { color: #ffcc66; }
+
+@media (max-width: 760px) {
+  .opaque-cols { flex-direction: column; }
+  .doc-heads { flex-direction: column; gap: 2px; }
+  .doc-heads p:last-child { text-align: left; }
+}
+
+.viewer-note {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  max-width: 640px;
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #f0d9a0;
+  background: rgba(60, 48, 20, 0.92);
+  border: 1px solid #6b5620;
+  border-radius: 6px;
+  text-align: center;
+}
+
+.viewer-foot { display: flex; align-items: center; justify-content: center; gap: 14px; }
+#viewer-pos { color: #b9bfc9; font-size: 13px; }
+
+@media (max-width: 760px) {
+  .stage-pane.side { flex-direction: column; }
+}
 
 @media (prefers-color-scheme: light) {
   :root {

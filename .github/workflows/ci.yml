@@ -1,8 +1,12 @@
 name: CI
 
+# Every branch, not just main. The machine this is developed on has no C
+# compiler, so `go test -race` cannot run there at all — CI is the only place a
+# data race is ever caught. Restricting that to main meant a feature branch
+# could grow for weeks with the one check it most needed never running on it,
+# which is exactly what happened to the branch that added documents support.
 on:
   push:
-    branches: [main]
   pull_request:
 
 jobs:

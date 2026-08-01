@@ -1,14 +1,21 @@
-// Package webui serves a small local page for reviewing duplicate photos by
-// eye before deleting them.
+// Package webui serves photocull's window: a small local page for reviewing
+// duplicates before deleting them.
 //
 // It runs in two shapes. Given a folder on the command line (`photocull serve
 // <dir>`), it starts with the scan already done. Launched bare (a double-click
-// on the binary), it starts empty and shows a page to pick a mode and a folder,
-// then scans on demand. Either way the review UI is the same.
+// on the binary), it starts empty and shows a page to pick a kind, a mode and a
+// folder, then scans on demand. Either way the review UI is the same.
 //
 // The whole point is trust: exact duplicates are safe to delete on faith, but
-// "similar" ones are a judgement call, and a wall of file paths is a poor way
-// to make it. Thumbnails side by side are a good one.
+// everything else is a judgement call, and a wall of file paths is a poor way to
+// make it. What replaces that wall depends on what is being reviewed —
+// thumbnails that can be laid over each other for photographs, the words that
+// actually differ for documents — and that is the only difference between the
+// two. The scan, the groups and the delete button are the same code.
+//
+// The security model is one line: a path may be read or recycled only if it was
+// part of the scan. Every endpoint that opens a file goes through
+// resolveAllowed, and that is deliberately the only door.
 package webui
 
 import (
@@ -175,6 +182,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/browse", s.handleBrowse)
 	mux.HandleFunc("/api/thumb", s.handleThumb)
 	mux.HandleFunc("/api/preview", s.handlePreview)
+	mux.HandleFunc("/api/snippet", s.handleSnippet)
+	mux.HandleFunc("/api/compare", s.handleCompare)
+	mux.HandleFunc("/api/imagediff", s.handleImageDiff)
 	mux.HandleFunc("/api/delete", s.handleDelete)
 	mux.HandleFunc("/api/merge", s.handleMerge)
 	mux.HandleFunc("/api/merge/status", s.handleMergeStatus)

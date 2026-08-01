@@ -1,0 +1,28 @@
+Quarterly review of the storage estate
+
+The estate now holds forty-four terabytes across six drives, of which roughly
+nine are believed to be duplicated. That figure is an estimate and should be
+treated as one: it comes from sampling three directories and extrapolating,
+which is a method that flatters itself.
+
+Three things drove the growth. Every laptop retired since the second quarter
+was archived whole rather than selectively, on the reasonable grounds that
+deciding what to keep costs more than the disk does. Phone backups were taken
+weekly and never pruned, so a photograph taken once exists in every backup
+made after it. And the shared drive was migrated twice, each time by copying
+rather than moving, because a copy is reversible and a move is not.
+
+None of these decisions was wrong when it was made. Together they produced an
+archive nobody can describe, which is a different kind of problem from an
+archive that is merely large.
+
+The recommendation is not to sort the estate. That would take a person a month
+and produce judgements nobody could later reconstruct. The recommendation is to
+find the files that are provably the same file, remove those without ceremony,
+and then look at what remains. Provable duplication is a much smaller claim
+than similarity, and it is one a machine can make honestly.
+
+Anything beyond that should be presented for review rather than acted on. The
+cost of deleting one unique file is not symmetrical with the benefit of
+reclaiming a terabyte, and any process that treats those two as comparable will
+eventually destroy something that mattered.

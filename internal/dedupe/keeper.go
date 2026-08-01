@@ -38,6 +38,66 @@ func KeepLargest(files []scanner.FileMeta) int {
 	})
 }
 
+// KeepNewest favours the most recently modified copy.
+func KeepNewest(files []scanner.FileMeta) int {
+	return pick(files, func(a, b scanner.FileMeta) bool {
+		return a.ModTime.After(b.ModTime)
+	})
+}
+
+// DocumentKeepStrategy prefers the newest copy, breaking ties with the larger
+// file and then the shallowest path.
+//
+// This is the exact opposite of the photo default, and the inversion is the
+// whole point rather than an oversight. A photograph's oldest copy is the
+// original, and every later one is a re-export that has lost pixels. A
+// document's newest copy is the revision the person actually worked on, and the
+// older ones are superseded drafts. Applying the photo rule to documents would
+// confidently suggest keeping the draft and recycling the final version.
+//
+// Newest-first applies only where the files actually differ. For byte-identical
+// copies there is no "later revision" at all — only a copy somebody made later,
+// which on any real disk is the backup rather than the original. Modification
+// time there is noise that would actively pick the wrong file, so those groups
+// fall back to the rule that still carries information: the shallower path is
+// the one a person filed deliberately.
+func DocumentKeepStrategy(files []scanner.FileMeta) int {
+	if identicalContent(files) {
+		return pick(files, neverBetter)
+	}
+	return pick(files, func(a, b scanner.FileMeta) bool {
+		if !a.ModTime.Equal(b.ModTime) {
+			return a.ModTime.After(b.ModTime)
+		}
+		if a.Size != b.Size {
+			return a.Size > b.Size
+		}
+		return shallower(a.Path, b.Path)
+	})
+}
+
+// neverBetter makes pick fall through to its shallowest-path tiebreak, which is
+// the whole ranking when nothing else distinguishes the files.
+func neverBetter(_, _ scanner.FileMeta) bool { return false }
+
+// identicalContent reports whether every file in the group carries the same
+// content hash — that is, whether this is an exact-duplicate group.
+func identicalContent(files []scanner.FileMeta) bool {
+	if len(files) < 2 {
+		return true
+	}
+	first := files[0].SHA256
+	if first == "" {
+		return false
+	}
+	for _, f := range files[1:] {
+		if f.SHA256 != first {
+			return false
+		}
+	}
+	return true
+}
+
 // DefaultKeepStrategy prefers the highest resolution, breaking ties with the
 // largest file and then the oldest timestamp.
 //
@@ -100,6 +160,8 @@ var strategies = map[string]KeepStrategy{
 	"resolution": KeepHighestResolution,
 	"oldest":     KeepOldest,
 	"largest":    KeepLargest,
+	"newest":     KeepNewest,
+	"document":   DocumentKeepStrategy,
 }
 
 // StrategyNames lists the accepted --strategy values, sorted for help text.

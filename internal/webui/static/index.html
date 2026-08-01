@@ -12,9 +12,33 @@
   <section id="launcher" class="launcher hidden">
     <div class="card">
       <h1>photocull</h1>
-      <p class="muted">Find and remove duplicate photos — safely. Nothing is ever deleted permanently.</p>
+      <p class="muted" id="tagline">Find and remove duplicate photos — safely. Nothing is ever deleted permanently.</p>
 
-      <h2>1. Choose a mode</h2>
+      <!--
+        Kind and mode are two separate questions, not one list of six. Every
+        mode below means something for both kinds, so folding them together
+        would flatten a 2×3 grid into a list where five of the six entries have
+        to be spelled out twice.
+      -->
+      <h2>1. What are you looking through?</h2>
+      <div class="modes kinds">
+        <label class="mode">
+          <input type="radio" name="kind" value="photos" checked>
+          <span class="mode-body">
+            <b>Photos</b>
+            <span class="muted">JPEG, PNG, HEIC and the rest. Compared by what they look like.</span>
+          </span>
+        </label>
+        <label class="mode">
+          <input type="radio" name="kind" value="docs">
+          <span class="mode-body">
+            <b>Documents</b>
+            <span class="muted">PDF, Word, Excel, PowerPoint and plain text — compared by what they say. Every other file is still checked for exact copies.</span>
+          </span>
+        </label>
+      </div>
+
+      <h2>2. Choose a mode</h2>
       <div class="modes">
         <label class="mode">
           <input type="radio" name="mode" value="exact" checked>
@@ -27,14 +51,14 @@
           <input type="radio" name="mode" value="similar">
           <span class="mode-body">
             <b>Find exact + similar</b>
-            <span class="muted">Also resized, re-compressed or re-encoded copies (incl. HEIC). Review by eye.</span>
+            <span class="muted" id="mode-similar-hint">Also resized, re-compressed or re-encoded copies (incl. HEIC). Review by eye.</span>
           </span>
         </label>
         <label class="mode">
           <input type="radio" name="mode" value="merge">
           <span class="mode-body">
-            <b>Add new photos to a library</b>
-            <span class="muted">Copy into a library only the photos from another folder that it doesn't already have.</span>
+            <b id="mode-merge-title">Add new photos to a library</b>
+            <span class="muted" id="mode-merge-hint">Copy into a library only the photos from another folder that it doesn't already have.</span>
           </span>
         </label>
       </div>
@@ -47,7 +71,7 @@
 
       <!-- Single folder: exact / similar modes -->
       <div id="single-folder">
-        <h2>2. Choose a folder</h2>
+        <h2>3. Choose a folder</h2>
         <div class="folder-row">
           <input type="text" id="folder" placeholder="e.g. F:\Fotos_Rescatadas — type or paste a path">
           <button class="secondary browse-btn" type="button" data-target="folder">Browse…</button>
@@ -56,12 +80,12 @@
 
       <!-- Two folders: add-to-library mode -->
       <div id="double-folder" class="hidden">
-        <h2>2. Your library <span class="muted">(kept — only added to)</span></h2>
+        <h2>3. Your library <span class="muted">(kept — only added to)</span></h2>
         <div class="folder-row">
           <input type="text" id="base-folder" placeholder="e.g. D:\Photos — your main library">
           <button class="secondary browse-btn" type="button" data-target="base-folder">Browse…</button>
         </div>
-        <h2>3. New photos to bring in <span class="muted">(never modified)</span></h2>
+        <h2>4. <span id="source-folder-title">New photos to bring in</span> <span class="muted">(never modified)</span></h2>
         <div class="folder-row">
           <input type="text" id="source-folder" placeholder="e.g. E:\PhoneDump — folder with new photos">
           <button class="secondary browse-btn" type="button" data-target="source-folder">Browse…</button>
@@ -99,11 +123,12 @@
         <button id="delete-selected" disabled>Move ticked photos to recycle bin</button>
         <span id="selection-count" class="muted"></span>
       </div>
-      <p class="hint muted">
-        Each group below is one set of photos that look alike. Compare them —
-        click any photo to see it full size — then tick the ones to remove.
-        Nothing is deleted until you press the button above, and even then it
-        only goes to the recycle bin.
+      <p class="hint muted" id="review-hint">
+        Each group below is one set of photos that look alike. Click any photo
+        to compare it against the copy being kept — side by side, with a wipe,
+        blinking between the two, or with the differences highlighted — then
+        tick the ones to remove. Nothing is deleted until you press the button
+        above, and even then it only goes to the recycle bin.
       </p>
     </header>
     <main id="groups"></main>
@@ -122,8 +147,9 @@
         <span id="merge-selection-count" class="muted"></span>
       </div>
       <p class="hint muted">
-        These photos are not in your library. Click any to see it full size, tick
-        the ones to add, and press the button. They are copied into a
+        <span id="merge-hint">These photos are not in your library. Click any to
+        see it full size, tick the ones to add, and press the button.</span>
+        They are copied into a
         "<span id="import-subdir">photocull_added</span>" folder inside your
         library — your originals are never moved.
       </p>
@@ -140,11 +166,98 @@
     </div>
   </section>
 
-  <!-- Full-size comparison overlay -->
-  <div id="lightbox" class="lightbox hidden">
-    <img id="lightbox-img" alt="">
-    <p id="lightbox-caption"></p>
-    <span class="lightbox-close">Click anywhere to close · Esc</span>
+  <!--
+    Comparison overlay. Deciding between two near-identical photos by looking at
+    one and then the other does not work — the eye cannot hold that much detail
+    between glances. So the same pair is offered four ways, because each one
+    catches a different kind of difference.
+  -->
+  <div id="viewer" class="viewer hidden">
+    <div class="viewer-bar">
+      <div class="viewer-modes" id="viewer-modes">
+        <button type="button" class="vmode" data-view="side" title="Both photos at once">Side by side</button>
+        <button type="button" class="vmode" data-view="wipe" title="Drag the divider across">Wipe</button>
+        <button type="button" class="vmode" data-view="blink" title="Alternate between them in place">Blink</button>
+        <button type="button" class="vmode" data-view="heat" title="Highlight what changed">Differences</button>
+      </div>
+      <span id="viewer-verdict" class="verdict"></span>
+      <button type="button" id="viewer-close" class="secondary">Close · Esc</button>
+    </div>
+
+    <div class="stage">
+      <!-- Side by side: two panes that zoom and pan together. -->
+      <div id="stage-side" class="stage-pane side">
+        <figure>
+          <div class="frame"><img id="side-a" class="zoomable" alt=""></div>
+          <figcaption id="side-a-cap"></figcaption>
+        </figure>
+        <figure>
+          <div class="frame"><img id="side-b" class="zoomable" alt=""></div>
+          <figcaption id="side-b-cap"></figcaption>
+        </figure>
+      </div>
+
+      <!-- Wipe and blink stack the two photos in exactly the same place. -->
+      <div id="stage-stack" class="stage-pane stack hidden">
+        <div class="frame stack-frame" id="stack-frame">
+          <img id="stack-a" class="zoomable" alt="">
+          <div class="clip" id="stack-clip"><img id="stack-b" class="zoomable" alt=""></div>
+          <div class="wipe-handle" id="wipe-handle"></div>
+        </div>
+        <p id="stack-cap" class="muted"></p>
+      </div>
+
+      <!-- The difference map, computed on the server. -->
+      <div id="stage-heat" class="stage-pane heat hidden">
+        <div class="frame"><img id="heat-img" class="zoomable" alt=""></div>
+        <p id="heat-cap" class="muted"></p>
+      </div>
+
+      <!-- One photo on its own, for the add-to-library gallery. -->
+      <div id="stage-single" class="stage-pane single hidden">
+        <div class="frame"><img id="single-img" class="zoomable" alt=""></div>
+        <p id="single-cap" class="muted"></p>
+      </div>
+
+      <!--
+        Two documents, compared a word at a time. The identical stretches are
+        collapsed to a count you can click to open, because a change buried in
+        thirty unchanged pages is a change nobody finds.
+      -->
+      <div id="stage-doc" class="stage-pane doc hidden">
+        <div class="doc-heads">
+          <p id="doc-a-cap" class="muted"></p>
+          <p id="doc-b-cap" class="muted"></p>
+        </div>
+        <div id="doc-diff" class="doc-diff"></div>
+        <p class="doc-caveat muted">
+          This compares the text photocull extracted, not the documents as they
+          look. A file and its PDF export will differ in page numbers, headers
+          and hyphenation that are not changes to the content.
+        </p>
+      </div>
+
+      <!--
+        Nothing to compare: a scan, a .zip, a legacy .doc. The two files' details
+        side by side are the whole of the evidence there is, and seeing the same
+        byte count under two different paths usually settles it.
+      -->
+      <div id="stage-opaque" class="stage-pane opaque hidden">
+        <p id="opaque-note" class="opaque-note"></p>
+        <div class="opaque-cols">
+          <dl id="opaque-a"></dl>
+          <dl id="opaque-b"></dl>
+        </div>
+      </div>
+
+      <p id="viewer-note" class="viewer-note hidden"></p>
+    </div>
+
+    <div class="viewer-foot" id="viewer-foot">
+      <button type="button" id="viewer-prev" class="secondary">← Previous copy</button>
+      <span id="viewer-pos" class="muted"></span>
+      <button type="button" id="viewer-next" class="secondary">Next copy →</button>
+    </div>
   </div>
 
   <template id="group-template">
@@ -157,9 +270,17 @@
 
   <template id="file-template">
     <figure class="file">
+      <!--
+        One template serves both kinds. A photo card shows the thumbnail and
+        hides the snippet; a document card does the reverse. They share the
+        ordinal, the badge, the metadata line and the checkbox, which is most
+        of the card — a second template would have been a second copy of all of
+        that, kept in step by hand.
+      -->
       <div class="thumb-wrap" role="button" tabindex="0" title="Click to view full size">
         <span class="ord"></span>
         <img loading="lazy" alt="" class="thumb">
+        <pre class="snippet hidden"></pre>
         <span class="zoom">⤢</span>
       </div>
       <figcaption>

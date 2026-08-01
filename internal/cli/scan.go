@@ -16,9 +16,12 @@ func newScanCmd(global *globalFlags) *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "scan <directory>",
-		Short: "Report duplicate photos without changing anything",
-		Long: `Scan walks a directory, fingerprints every photo and reports the duplicates
-it finds. It only reads: no file is moved, renamed or deleted.
+		Short: "Report duplicates without changing anything",
+		Long: `Scan walks a directory, fingerprints what it finds and reports the duplicates.
+It only reads: no file is moved, renamed or deleted.
+
+Add --kind docs to look through documents rather than photographs, and
+--similar to match files that are alike rather than only identical.
 
 Use it first to see what is there, then reach for "photocull clean".`,
 		Args:         cobra.ExactArgs(1),
@@ -30,7 +33,7 @@ Use it first to see what is there, then reach for "photocull clean".`,
 				fmt.Fprintf(out, "Scanning %s ...\n", args[0])
 			}
 
-			a, err := analyze(cmd.Context(), args[0], global, &match)
+			a, err := analyze(cmd, args[0], global, &match)
 			if err != nil {
 				return err
 			}
@@ -48,8 +51,14 @@ Use it first to see what is there, then reach for "photocull clean".`,
 			fmt.Fprintln(out)
 			fmt.Fprint(out, a.stats.Summary())
 
+			// Echo back the flags that shaped this scan, so the suggested
+			// command actually reproduces what the user is looking at.
 			if a.stats.Groups > 0 {
-				fmt.Fprintf(out, "\nRun \"photocull clean %s\" to review and remove them.\n", args[0])
+				extra := kindFlagFor(global)
+				if match.similar {
+					extra += " --similar"
+				}
+				fmt.Fprintf(out, "\nRun \"photocull clean %s%s\" to review and remove them.\n", args[0], extra)
 			}
 			return nil
 		},

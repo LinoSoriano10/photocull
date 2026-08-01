@@ -79,6 +79,14 @@ type Diff struct {
 	// Truncated reports that one or both documents were longer than MaxWords
 	// and only the beginning was compared.
 	Truncated bool
+
+	// TimedOut reports that the comparison ran out of time and what came back
+	// is a valid diff rather than the best one. It is reported because the
+	// difference is visible: a timed-out diff tends to show one long change
+	// where a finished one would have found several small ones, and a reader
+	// who is not told that will conclude the two documents are further apart
+	// than they are — and delete the wrong copy on the strength of it.
+	TimedOut bool
 }
 
 // Identical reports that the two documents say exactly the same words.
@@ -95,6 +103,12 @@ func (d Diff) Identical() bool { return d.ChangedWords == 0 }
 // punctuation *are* compared: unlike a line break, a changed comma is a change
 // somebody made on purpose.
 func Words(a, b string) Diff {
+	return words(a, b, Timeout)
+}
+
+// words is Words with the deadline as a parameter, so a test can prove the
+// timeout is noticed without spending the real budget waiting for it.
+func words(a, b string, timeout time.Duration) Diff {
 	wa, ta := split(a)
 	wb, tb := split(b)
 
@@ -107,11 +121,19 @@ func Words(a, b string) Diff {
 	}
 
 	dmp := diffmatchpatch.New()
-	dmp.DiffTimeout = Timeout
-	segs := decode(dmp.DiffMain(ea, eb, false), vocab)
+	dmp.DiffTimeout = timeout
 
-	out := build(segs)
+	// The library has no "did you finish?" flag, so the clock is the only way
+	// to ask. It gives up *at* the deadline rather than before it, so anything
+	// that took the full budget came back early rather than complete; the
+	// margin keeps a merely slow machine from being reported as a timeout.
+	started := time.Now()
+	diffs := dmp.DiffMain(ea, eb, false)
+	timedOut := time.Since(started) >= timeout-timeout/10
+
+	out := build(decode(diffs, vocab))
 	out.Truncated = ta || tb
+	out.TimedOut = timedOut
 	return out
 }
 

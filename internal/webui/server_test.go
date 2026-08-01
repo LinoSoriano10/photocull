@@ -14,6 +14,7 @@ import (
 	"photocull/internal/dedupe"
 	"photocull/internal/report"
 	"photocull/internal/scanner"
+	"photocull/internal/trash"
 )
 
 // fakeMover records deletions instead of touching the recycle bin.
@@ -28,11 +29,19 @@ func (m *fakeMover) Move(paths ...string) error {
 // source.jpg (keeper) plus two look-alikes.
 func fixtureServer(t *testing.T) (*Server, *fakeMover) {
 	t.Helper()
-
 	root, err := filepath.Abs("../../testdata/similar")
 	if err != nil {
 		t.Fatal(err)
 	}
+	mover := &fakeMover{}
+	return fixtureServerWith(t, root, mover), mover
+}
+
+// fixtureServerWith is the same fixture with a mover of the caller's choosing,
+// so a test can make the recycle bin slow, or failing, on purpose.
+func fixtureServerWith(t *testing.T, root string, mover trash.Mover) *Server {
+	t.Helper()
+
 	mod := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	mk := func(name string) scanner.FileMeta {
 		return scanner.FileMeta{
@@ -53,8 +62,7 @@ func fixtureServer(t *testing.T) (*Server, *fakeMover) {
 	}
 	stats := report.Stats{FilesScanned: 3, Groups: 1, SimilarGroups: 1, DuplicateFiles: 2, ReclaimableBytes: 2000}
 
-	mover := &fakeMover{}
-	return New(root, []dedupe.Group{group}, stats, mover), mover
+	return New(root, []dedupe.Group{group}, stats, mover)
 }
 
 func TestReportEndpoint(t *testing.T) {

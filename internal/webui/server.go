@@ -73,6 +73,11 @@ type Server struct {
 	// scanMu guards the scan and merge jobs, which run in the background so the
 	// page can poll their progress rather than block on one long request.
 	//
+	// Lock order, where both are needed: mu first, then scanMu. Only load takes
+	// both, and it does so in that order; nothing anywhere takes scanMu and then
+	// reaches for mu. Writing it down because the rule is invisible at the call
+	// site and the failure it prevents is a deadlock, not a wrong answer.
+	//
 	// mergeCopy is built whole inside one critical section and never touched
 	// again, which is why a reader may take the reference under the lock and
 	// then read the map outside it. Anything that later mutates it in place
@@ -171,6 +176,22 @@ func (s *Server) load(root string, groups []dedupe.Group, stats report.Stats) {
 			}
 		}
 	}
+	s.clearMerge()
+}
+
+// clearMerge throws away any "add to library" result.
+//
+// A new analysis replaces what the window is looking at, and a merge that
+// belonged to the previous one has no business surviving it: /api/merge/result
+// would keep answering with folders the user has moved on from, and the copy
+// endpoint would still accept the paths it listed. Neither is a privilege
+// escalation — those paths were permitted when they were gathered — but stale
+// state a page can read is a bug waiting to be reported as a mystery.
+func (s *Server) clearMerge() {
+	s.scanMu.Lock()
+	defer s.scanMu.Unlock()
+	s.mergeResult = nil
+	s.mergeCopy = make(map[string]bool)
 }
 
 // Handler returns the HTTP routes: the embedded page at the root, and the

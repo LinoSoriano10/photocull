@@ -3,6 +3,7 @@ package textdiff
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // filler is prose to pad two documents apart with, so the collapsing logic has
@@ -215,5 +216,29 @@ func TestWordDiffCountsEveryWordItCompared(t *testing.T) {
 	}
 	if d.ChangedWords != 2 {
 		t.Errorf("changedWords = %d, want 2", d.ChangedWords)
+	}
+}
+
+// TestWordDiffReportsWhenItRanOutOfTime.
+//
+// A timed-out comparison comes back valid but coarse: it tends to report one
+// long change where a finished one would have found several small ones. On
+// screen that is indistinguishable from a real answer, so a reader would
+// conclude the two documents are further apart than they are — and might delete
+// the wrong copy on the strength of it. The flag is what lets the page say so.
+func TestWordDiffReportsWhenItRanOutOfTime(t *testing.T) {
+	// Two documents with nothing in common are the expensive case: the
+	// algorithm is cheap when texts are alike and costly when they are not.
+	a := filler(4000)
+	b := strings.Repeat("completely different words here ", 1000)
+
+	if d := words(a, b, time.Nanosecond); !d.TimedOut {
+		t.Error("a comparison given a nanosecond did not report timing out")
+	}
+
+	// And the ordinary case must not cry wolf: a flag that fires on healthy
+	// input would train the user to ignore it.
+	if d := words("one two three", "one two four", Timeout); d.TimedOut {
+		t.Error("a trivial comparison was reported as having timed out")
 	}
 }

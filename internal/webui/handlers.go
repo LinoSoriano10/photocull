@@ -468,6 +468,7 @@ type docDiff struct {
 	Trailing      string `json:"trailing,omitempty"`
 
 	Truncated bool `json:"truncated,omitempty"`
+	TimedOut  bool `json:"timedOut,omitempty"`
 }
 
 type hunkView struct {
@@ -620,6 +621,7 @@ func (s *Server) compareDocuments(w http.ResponseWriter, a, b string) {
 			TrailingWords: d.TrailingWords,
 			Trailing:      d.Trailing,
 			Truncated:     d.Truncated,
+			TimedOut:      d.TimedOut,
 		},
 	})
 }
@@ -680,8 +682,17 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The lock is taken three times rather than held across the whole handler,
+	// and that is deliberate. Moving files to the recycle bin is a call into the
+	// operating system that takes seconds for a large batch, and s.mu is what
+	// every thumbnail, snippet and comparison request needs to resolve its path.
+	// Holding it across the move froze the entire window until the last file had
+	// gone — the grid stopped loading, and the app looked hung at precisely the
+	// moment the user most wants to see it working.
+	//
+	// Nothing is lost by releasing it: permitted paths are captured under the
+	// lock, and the recycle bin does not care what the server thinks in between.
 	s.mu.Lock()
-	defer s.mu.Unlock()
 
 	// Only delete files that a duplicate scan flagged — so a crafted request
 	// cannot move an arbitrary file to the recycle bin, and "add to library"
@@ -697,6 +708,19 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		permitted = append(permitted, abs)
 	}
 
+	// Drop them from the permitted sets before the move, still under the lock.
+	// A path already on its way to the recycle bin should not be servable, and
+	// doing it here means there is no window in which a second delete could
+	// pick up the same file twice.
+	if len(permitted) > 0 {
+		s.forgetPaths(permitted)
+	}
+	s.mu.Unlock()
+
+	// Their previews can no longer be requested through any endpoint, so
+	// holding the bytes is pure waste.
+	s.thumb.Forget(permitted...)
+
 	moved := 0
 	if len(permitted) > 0 {
 		if err := s.mover.Move(permitted...); err != nil {
@@ -705,7 +729,12 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 			failed = append(failed, err.Error())
 		}
 		moved = len(permitted)
-		s.forget(permitted)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(permitted) > 0 {
+		s.forgetGroups(permitted)
 	}
 
 	writeJSON(w, http.StatusOK, deleteResponse{
@@ -715,15 +744,26 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// forget removes deleted files from the groups and disallows their paths.
-// Groups that fall to a single remaining file are dropped: nothing left to
-// decide. Callers must hold s.mu.
-func (s *Server) forget(paths []string) {
+// forgetPaths withdraws permission to read or delete these paths.
+//
+// Split from forgetGroups so it can run *before* the files are moved: the two
+// halves used to be one call after the move, which meant a file already in the
+// recycle bin was still servable for as long as the move took. Callers must
+// hold s.mu.
+func (s *Server) forgetPaths(paths []string) {
+	for _, p := range paths {
+		delete(s.allowed, p)
+		delete(s.deletable, p)
+	}
+}
+
+// forgetGroups drops the deleted files from the report. Groups that fall to a
+// single remaining file go too: there is nothing left to decide about them.
+// Callers must hold s.mu.
+func (s *Server) forgetGroups(paths []string) {
 	gone := make(map[string]bool, len(paths))
 	for _, p := range paths {
 		gone[p] = true
-		delete(s.allowed, p)
-		delete(s.deletable, p)
 	}
 
 	kept := s.groups[:0]

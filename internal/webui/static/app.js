@@ -768,10 +768,17 @@ function renderDocDiff(d) {
 
   const pct = total ? (d.changedWords / total) * 100 : 0;
   const n = d.hunks.length;
+  // Both caveats are stated rather than implied. A truncated or timed-out
+  // comparison looks exactly like a complete one, and the reader is about to
+  // decide which copy to destroy on the strength of it.
+  const caveats = [];
+  if (d.truncated) caveats.push("only the first part of these documents was compared");
+  if (d.timedOut) caveats.push("the comparison ran out of time, so it may show fewer, larger changes than there really are");
+
   viewerVerdict.textContent =
     `${n} change${n === 1 ? "" : "s"} · ${d.changedWords.toLocaleString()} of ` +
     `${total.toLocaleString()} words differ (${pct < 1 ? pct.toFixed(1) : Math.round(pct)}%)` +
-    (d.truncated ? " · only the first part of these documents was compared" : "");
+    (caveats.length ? " · " + caveats.join(" · ") : "");
 }
 
 // hunkParagraph renders one change with the words around it.

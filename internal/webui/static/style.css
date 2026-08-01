@@ -205,16 +205,22 @@ figcaption { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
   place-items: center;
   padding: 24px;
 }
+/* The spacing here is deliberately tighter than it looks like it wants to be.
+   Measured on a maximised window at 1920x1080 — the commonest screen there is —
+   the card at its roomier settings came to 961px against 929px of viewport, so
+   the front door of the application scrolled, and the license notice under it
+   was below the fold. Trimming the gaps between sections buys the 40px that
+   costs, and the card still breathes. */
 .card {
   width: min(560px, 100%);
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 16px;
-  padding: 28px 30px;
+  padding: 22px 30px;
 }
 .card h1 { font-size: 26px; }
-.card > .muted { margin: 4px 0 20px; }
-.card h2 { font-size: 14px; margin: 22px 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
+.card > .muted { margin: 4px 0 14px; }
+.card h2 { font-size: 14px; margin: 16px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
 
 .modes { display: grid; gap: 10px; }
 /* Side by side rather than stacked, so the kind question does not read as three
@@ -248,7 +254,7 @@ figcaption { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
   color: var(--text);
 }
 
-button.primary { background: var(--accent); margin-top: 22px; width: 100%; padding: 12px; font-size: 16px; }
+button.primary { background: var(--accent); margin-top: 16px; width: 100%; padding: 12px; font-size: 16px; }
 button.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
 
 .error { color: var(--danger); margin-top: 14px; }

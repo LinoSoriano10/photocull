@@ -29,7 +29,7 @@ func startMerge(t *testing.T, s *Server, req mergeRequest) int {
 	t.Helper()
 	body, _ := json.Marshal(req)
 	rec := httptest.NewRecorder()
-	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/merge", bytes.NewReader(body)))
+	bound(t, s).ServeHTTP(rec, postJSON("/api/merge", bytes.NewReader(body)))
 	return rec.Code
 }
 
@@ -91,7 +91,7 @@ func TestMergeEndpointFindsNewAndCopies(t *testing.T) {
 	// But it must NOT be deletable via /api/delete (only copyable).
 	delBody, _ := json.Marshal(deleteRequest{Paths: []string{newPath}})
 	delRec := httptest.NewRecorder()
-	bound(t, s).ServeHTTP(delRec, httptest.NewRequest(http.MethodPost, "/api/delete", bytes.NewReader(delBody)))
+	bound(t, s).ServeHTTP(delRec, postJSON("/api/delete", bytes.NewReader(delBody)))
 	var delResp deleteResponse
 	json.Unmarshal(delRec.Body.Bytes(), &delResp)
 	if delResp.Moved != 0 {
@@ -101,7 +101,7 @@ func TestMergeEndpointFindsNewAndCopies(t *testing.T) {
 	// Copy it into the library.
 	copyBody, _ := json.Marshal(deleteRequest{Paths: []string{newPath}})
 	copyRec := httptest.NewRecorder()
-	bound(t, s).ServeHTTP(copyRec, httptest.NewRequest(http.MethodPost, "/api/merge/copy", bytes.NewReader(copyBody)))
+	bound(t, s).ServeHTTP(copyRec, postJSON("/api/merge/copy", bytes.NewReader(copyBody)))
 	var copyResp mergeCopyResponse
 	json.Unmarshal(copyRec.Body.Bytes(), &copyResp)
 	if copyResp.Copied != 1 {
@@ -127,7 +127,7 @@ func TestMergeCopyRejectsUnlistedPath(t *testing.T) {
 	// A path the comparison never flagged must not be copied.
 	body, _ := json.Marshal(deleteRequest{Paths: []string{`C:\Windows\notepad.exe`}})
 	rec := httptest.NewRecorder()
-	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/merge/copy", bytes.NewReader(body)))
+	bound(t, s).ServeHTTP(rec, postJSON("/api/merge/copy", bytes.NewReader(body)))
 	var resp mergeCopyResponse
 	json.Unmarshal(rec.Body.Bytes(), &resp)
 	if resp.Copied != 0 {

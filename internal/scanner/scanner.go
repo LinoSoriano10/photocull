@@ -182,12 +182,21 @@ func Scan(ctx context.Context, opts Options) (*Result, error) {
 	if opts.Root == "" {
 		return nil, errors.New("scanner: no directory given")
 	}
+	// These two messages are read by a person, not a log: they are what the
+	// launcher shows under the folder box when a path is wrong, which is the
+	// commonest thing to get wrong in this application. So the path is printed
+	// plainly rather than with %q — on Windows, where nearly every path has
+	// backslashes, %q doubles every one of them and the user is left comparing
+	// C:\\Users\\... against what they typed. The "not found" case is spelled
+	// out instead of wrapping the OS error, which says GetFileAttributesEx.
 	info, err := os.Stat(opts.Root)
-	if err != nil {
-		return nil, fmt.Errorf("scanner: cannot access %q: %w", opts.Root, err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("scanner: %q is not a directory", opts.Root)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, fmt.Errorf("scanner: there is no folder at %s", opts.Root)
+	case err != nil:
+		return nil, fmt.Errorf("scanner: cannot open %s: %w", opts.Root, err)
+	case !info.IsDir():
+		return nil, fmt.Errorf("scanner: %s is a file, not a folder", opts.Root)
 	}
 
 	workers := opts.Workers

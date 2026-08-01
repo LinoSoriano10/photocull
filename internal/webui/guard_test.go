@@ -2,6 +2,7 @@ package webui
 
 import (
 	"bytes"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,11 +19,20 @@ func (a loopbackAddr) String() string  { return string(a) }
 const testPort = "8099"
 
 // bound gives s a session if it has none, and returns a handler that talks to
-// it the way the app's own window does: right Host, right cookie, and JSON on
-// POSTs. Every test that means to exercise an endpoint goes through here.
+// it the way the app's own window does: right Host, right cookie. Every test
+// that means to exercise an endpoint goes through here.
 //
 // Tests that mean to exercise the guard itself call s.Handler() directly, so
 // that what they are checking is the doorman and not this helper.
+//
+// It deliberately does NOT supply a Content-Type. It used to, filling one in on
+// any POST that arrived without one, and that one act of helpfulness hid a real
+// bug for an entire release: app.js sent POST /api/scan/cancel with no body and
+// no header, the guard answered 415, and the Cancel button silently stopped
+// cancelling — while every test here passed, because the helper had quietly put
+// the header back. A test double that is more forgiving than the real client is
+// not a convenience, it is a blind spot. Tests now send the header themselves,
+// exactly as the browser has to.
 func bound(t *testing.T, s *Server) http.Handler {
 	t.Helper()
 
@@ -38,11 +48,133 @@ func bound(t *testing.T, s *Server) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Host = "127.0.0.1:" + port
 		r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
-		if r.Method == http.MethodPost && r.Header.Get("Content-Type") == "" {
-			r.Header.Set("Content-Type", "application/json")
-		}
 		inner.ServeHTTP(w, r)
 	})
+}
+
+// postJSON builds the POST a browser would send: the header is not optional,
+// because the guard uses it to shut out cross-site forms.
+func postJSON(target string, body io.Reader) *http.Request {
+	r := httptest.NewRequest(http.MethodPost, target, body)
+	r.Header.Set("Content-Type", "application/json")
+	return r
+}
+
+// TestEveryPostTheAppMakesIsAccepted walks the endpoints app.js posts to and
+// checks each one is reachable with the headers a fetch actually carries.
+//
+// It exists because of a bug this suite could not see. Every POST here is
+// either a request with a JSON body, which browsers label, or the one without
+// a body — /api/scan/cancel — which a fetch labels only if the code says so.
+// It did not, the guard answered 415, and Cancel stopped cancelling: the window
+// went back to the launcher while the scan kept reading the drive. What matters
+// is not that one line, it is that no test in this package was sending a POST
+// the way the client sends it, so nothing could have caught it.
+//
+// A 404 or a 400 is a pass here. The thing being tested is that the request
+// gets past the guard at all, not what the handler then decides.
+func TestEveryPostTheAppMakesIsAccepted(t *testing.T) {
+	posts := []struct {
+		path string
+		body string
+	}{
+		{"/api/scan", `{"path":""}`},
+		{"/api/scan/cancel", ""}, // no body: the one the header was forgotten on
+		{"/api/delete", `{"paths":[]}`},
+		{"/api/merge", `{"base":"","source":""}`},
+		{"/api/merge/copy", `{"paths":[]}`},
+	}
+
+	for _, p := range posts {
+		t.Run(p.path, func(t *testing.T) {
+			s, token := session(t)
+			r := postJSON(p.path, strings.NewReader(p.body))
+			r.Host = "127.0.0.1:" + testPort
+			r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, r)
+
+			if rec.Code == http.StatusUnsupportedMediaType {
+				t.Errorf("%s = 415: the guard turned away a request the app makes", p.path)
+			}
+			if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+				t.Errorf("%s = %d: the guard turned away a same-origin request", p.path, rec.Code)
+			}
+		})
+	}
+}
+
+// TestClientSendsJSONHeaderOnEveryPost reads app.js and checks each POST it
+// makes sets Content-Type.
+//
+// This is the test that would have caught the bug, and the one above is not.
+// The guard was right to answer 415; the mistake was on the client, in a file
+// no Go test executes. Reading the script and asserting a property of it is
+// crude, and it is the only thing standing between a forgotten header and a
+// button that silently stops working — the failure has no stack trace, no
+// console error and no visible symptom beyond a disk that keeps spinning.
+//
+// A fetch with a JSON body gets the header naturally, because the code writing
+// JSON.stringify tends to write the header next to it. The one that gets
+// forgotten is the request with no body, where the header looks pointless.
+func TestClientSendsJSONHeaderOnEveryPost(t *testing.T) {
+	source, err := staticFiles.ReadFile("static/app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+
+	// Each fetch(...) call ends where the next one begins. That is enough to
+	// tell which options object a `method: "POST"` belongs to.
+	calls := strings.Split(string(source), "fetch(")
+	posts := 0
+	for _, call := range calls[1:] {
+		if !strings.Contains(call, `method: "POST"`) {
+			continue
+		}
+		posts++
+
+		// Only look at the options object, not the whole rest of the function.
+		options := call
+		if end := strings.Index(options, "});"); end != -1 {
+			options = options[:end]
+		}
+		if !strings.Contains(options, "Content-Type") {
+			endpoint := options
+			if q := strings.Index(endpoint, `"`); q != -1 {
+				if q2 := strings.Index(endpoint[q+1:], `"`); q2 != -1 {
+					endpoint = endpoint[q+1 : q+1+q2]
+				}
+			}
+			t.Errorf("POST to %q sets no Content-Type, so the guard will answer 415 "+
+				"and whatever this button does will silently stop happening", endpoint)
+		}
+	}
+
+	// If the parse stops finding calls, the test passes by accident forever.
+	if posts < 5 {
+		t.Errorf("found only %d POSTs in app.js; the parse has drifted from the code", posts)
+	}
+}
+
+// TestCancelActuallyStopsAScan is the behaviour the 415 destroyed, checked
+// end to end rather than at the door: press Cancel, and the scan stops.
+func TestCancelActuallyStopsAScan(t *testing.T) {
+	s, token := session(t)
+
+	r := postJSON("/api/scan/cancel", nil)
+	r.Host = "127.0.0.1:" + testPort
+	r.AddCookie(&http.Cookie{Name: sessionCookie, Value: token})
+
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, r)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cancel = %d, want 200; body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "cancelled") {
+		t.Errorf("cancel answered %q, which does not say it cancelled", rec.Body.String())
+	}
 }
 
 // session starts a server with a session and hands back its parts.

@@ -152,7 +152,7 @@ func TestDeleteMovesOnlyScannedFiles(t *testing.T) {
 
 	body, _ := json.Marshal(deleteRequest{Paths: []string{dupAbs}})
 	rec := httptest.NewRecorder()
-	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/delete", bytes.NewReader(body)))
+	bound(t, s).ServeHTTP(rec, postJSON("/api/delete", bytes.NewReader(body)))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -179,7 +179,7 @@ func TestDeleteRefusesUnscannedPath(t *testing.T) {
 
 	body, _ := json.Marshal(deleteRequest{Paths: []string{"C:\\Windows\\System32\\notepad.exe"}})
 	rec := httptest.NewRecorder()
-	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/delete", bytes.NewReader(body)))
+	bound(t, s).ServeHTTP(rec, postJSON("/api/delete", bytes.NewReader(body)))
 
 	if len(mover.moved) != 0 {
 		t.Fatalf("an unscanned path was moved: %v", mover.moved)

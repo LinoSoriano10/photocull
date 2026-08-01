@@ -314,7 +314,16 @@ cancelScanBtn.addEventListener("click", async () => {
   cancelledByUser = true;
   scanPhase.textContent = "Cancelling…";
   try {
-    await fetch("/api/scan/cancel", { method: "POST" });
+    // The Content-Type looks redundant on a request with no body, and it is
+    // not: the guard requires it on every POST, because that is what stops a
+    // cross-site form — which can only send a handful of content types — from
+    // reaching the API at all. Without this header the server answers 415, the
+    // scan carries on reading the whole drive, and the only sign of it is that
+    // the user is back on the launcher while the disk keeps spinning.
+    await fetch("/api/scan/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
   } catch {
     /* the poll will still notice it stopped */
   }

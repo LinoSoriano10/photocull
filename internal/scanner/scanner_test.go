@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"photocull/internal/hashing"
@@ -215,6 +216,47 @@ func TestScanRejectsBadRoots(t *testing.T) {
 				t.Errorf("Scan(%q) returned no error", tt.root)
 			}
 		})
+	}
+}
+
+// TestBadRootErrorIsReadable pins the wording, because these two errors are not
+// log lines: the launcher prints them straight under the folder box, and a
+// mistyped path is the commonest thing to get wrong in this application.
+//
+// The specific trap is Windows. %q escapes every backslash, so a path the user
+// typed as C:\Photos came back as "C:\\Photos" and they were left comparing it
+// against what they wrote, wondering whether the doubling was the problem.
+func TestBadRootErrorIsReadable(t *testing.T) {
+	missing := filepath.Join(testdataDir, "no-such-directory")
+
+	_, err := Scan(context.Background(), Options{Root: missing})
+	if err == nil {
+		t.Fatal("scanning a missing directory returned no error")
+	}
+	msg := err.Error()
+
+	if !strings.Contains(msg, missing) {
+		t.Errorf("error does not name the path the user gave:\n  %s", msg)
+	}
+	if strings.Contains(msg, `\\`) {
+		t.Errorf("error double-escapes the path, which is what %%q does to a Windows path:\n  %s", msg)
+	}
+	// The wrapped OS error names a Win32 entry point, which means nothing to
+	// somebody who mistyped a folder.
+	if strings.Contains(msg, "GetFileAttributesEx") {
+		t.Errorf("error leaks the OS call rather than saying the folder is not there:\n  %s", msg)
+	}
+
+	// A file where a folder was expected is a different mistake and gets a
+	// different sentence, otherwise "there is no folder at ..." would be a lie
+	// about a path that plainly exists.
+	file := filepath.Join(testdataDir, "exact", "original.jpg")
+	_, err = Scan(context.Background(), Options{Root: file})
+	if err == nil {
+		t.Fatal("scanning a file returned no error")
+	}
+	if !strings.Contains(err.Error(), "not a folder") {
+		t.Errorf("pointing at a file should say so, got:\n  %s", err)
 	}
 }
 

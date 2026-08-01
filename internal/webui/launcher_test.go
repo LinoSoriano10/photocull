@@ -26,7 +26,7 @@ func startScan(t *testing.T, s *Server, req scanRequest) int {
 	t.Helper()
 	body, _ := json.Marshal(req)
 	rec := httptest.NewRecorder()
-	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/scan", bytes.NewReader(body)))
+	bound(t, s).ServeHTTP(rec, postJSON("/api/scan", bytes.NewReader(body)))
 	return rec.Code
 }
 

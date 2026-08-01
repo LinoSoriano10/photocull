@@ -59,7 +59,7 @@ func TestDeleteDoesNotFreezeTheWindow(t *testing.T) {
 	go func() {
 		defer close(done)
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/delete", bytes.NewReader(body)))
+		h.ServeHTTP(rec, postJSON("/api/delete", bytes.NewReader(body)))
 	}()
 
 	// Wait until the move is genuinely in progress, then ask for a thumbnail of
@@ -100,7 +100,7 @@ func TestDeleteWithdrawsPermissionBeforeMoving(t *testing.T) {
 
 	go func() {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/delete", bytes.NewReader(body)))
+		h.ServeHTTP(rec, postJSON("/api/delete", bytes.NewReader(body)))
 	}()
 	<-mover.started
 
@@ -148,7 +148,7 @@ func TestScanClearsAPreviousMergeResult(t *testing.T) {
 	// And the copy endpoint must no longer accept the paths it had listed.
 	body, _ := json.Marshal(deleteRequest{Paths: []string{filepath.Join(source, "new.jpg")}})
 	rec := httptest.NewRecorder()
-	bound(t, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/merge/copy", bytes.NewReader(body)))
+	bound(t, s).ServeHTTP(rec, postJSON("/api/merge/copy", bytes.NewReader(body)))
 	var resp map[string]any
 	json.Unmarshal(rec.Body.Bytes(), &resp)
 	if copied, _ := resp["copied"].(float64); copied != 0 {

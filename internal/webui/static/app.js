@@ -594,9 +594,10 @@ function previewURL(file) {
   return `/api/preview?path=${encodeURIComponent(file.path)}`;
 }
 
-function fileCaption(file) {
-  const dims = file.decoded ? `${file.width}×${file.height}` : "unreadable";
-  return `${file.relPath} — ${humanBytes(file.size)} · ${dims} · ${file.modTime}`;
+// fileCaption names a file above or beside it. It takes the kind rather than
+// reading it off vs, because it is also used before a viewer state exists.
+function fileCaption(file, kind) {
+  return `${file.relPath} — ${detailLine(file, kind)}`;
 }
 
 function modeButton(view) {
@@ -608,7 +609,7 @@ function modeButton(view) {
 function openSingle(file) {
   vs = { view: "single", kind: "photos", others: [], at: 0, zoom: identityZoom() };
   document.getElementById("single-img").src = previewURL(file);
-  document.getElementById("single-cap").textContent = fileCaption(file);
+  document.getElementById("single-cap").textContent = fileCaption(file, "photos");
   viewerModes.classList.add("hidden");
   viewerFoot.classList.add("hidden");
   viewerVerdict.textContent = "";
@@ -683,8 +684,8 @@ async function loadPhotoPair(a, b) {
   document.getElementById("side-b").src = urlB;
   document.getElementById("stack-a").src = urlA;
   document.getElementById("stack-b").src = urlB;
-  document.getElementById("side-a-cap").textContent = `KEEP · ${fileCaption(a)}`;
-  document.getElementById("side-b-cap").textContent = fileCaption(b);
+  document.getElementById("side-a-cap").textContent = `KEEP · ${fileCaption(a, "photos")}`;
+  document.getElementById("side-b-cap").textContent = fileCaption(b, "photos");
   document.getElementById("stack-cap").textContent =
     `Keeping "${a.relPath}" underneath · "${b.relPath}" on top`;
   document.getElementById("heat-img").src =
@@ -720,8 +721,8 @@ async function compare(a, b) {
 const docDiffEl = document.getElementById("doc-diff");
 
 async function loadDocPair(a, b) {
-  document.getElementById("doc-a-cap").textContent = `KEEP · ${fileCaption(a)}`;
-  document.getElementById("doc-b-cap").textContent = fileCaption(b);
+  document.getElementById("doc-a-cap").textContent = `KEEP · ${fileCaption(a, "docs")}`;
+  document.getElementById("doc-b-cap").textContent = fileCaption(b, "docs");
   docDiffEl.textContent = "Reading both documents…";
   setPane("doc");
   vs.view = "doc";

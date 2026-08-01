@@ -394,8 +394,12 @@ button.secondary { background: var(--panel-2); color: var(--text); border: 1px s
 .stage-pane.doc { gap: 10px; }
 /* The two captions sit at the outer edges, so which document is on which side
    of every change reads off the header without being spelled out per hunk. */
+/* The two captions sit against the outer edges, so which document is on which
+   side of every change reads off the header without being spelled out per hunk.
+   Both selectors have to out-specify the `.stage-pane .muted` centring above. */
 .doc-heads { display: flex; gap: 14px; }
-.doc-heads p { flex: 1; min-width: 0; margin: 0; text-align: left; }
+.doc-heads p { flex: 1; min-width: 0; margin: 0; }
+.doc-heads p:first-child { text-align: left; }
 .doc-heads p:last-child { text-align: right; }
 
 .doc-diff {
@@ -452,9 +456,10 @@ button.secondary { background: var(--panel-2); color: var(--text); border: 1px s
 .skip-text { margin: 6px 0 10px; color: #8f96a3; font-size: 14px; }
 
 .doc-identical { color: var(--keep); font-size: 15px; }
-/* word-break: normal undoes the break-all every .stage-pane .muted carries for
-   file paths; this line is a sentence and must wrap like one. */
-.doc-caveat { font-size: 12px; margin: 0; word-break: normal; }
+/* Written .stage-pane .doc-caveat to beat `.stage-pane .muted`, whose
+   word-break: break-all is right for file paths and wrong for a sentence: it
+   wraps this one mid-word. */
+.stage-pane .doc-caveat { font-size: 12px; margin: 0; word-break: normal; }
 
 /* ---- Nothing to compare ---- */
 

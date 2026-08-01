@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	"photocull/internal/fingerprint"
 	"photocull/internal/hashing"
 	"photocull/internal/scanner"
 )
@@ -20,30 +21,57 @@ const ImportSubdir = "photocull_added"
 
 // MergeOptions configures an "add to library" comparison.
 type MergeOptions struct {
-	Base      string // the library that is kept and added to
-	Source    string // the folder whose new photos we want to bring in
-	Similar   bool   // also treat look-alikes as "already have it"
+	Base       string   // the library that is kept and added to
+	Source     string   // the folder whose new files we want to bring in
+	Extensions []string // empty means whatever the kind looks at
+
+	// Kind selects what is being merged. Empty means photos, so every caller
+	// written before documents existed keeps working unchanged.
+	Kind string
+
+	Similar   bool // also treat look-alikes as "already have it"
 	Threshold int
 	Progress  *scanner.Progress
 }
 
-// MergeAnalysis is the outcome: which photos in Source are genuinely new.
+// MergeAnalysis is the outcome: which files in Source are genuinely new.
 type MergeAnalysis struct {
-	BaseRoot     string              `json:"baseRoot"`
-	SourceRoot   string              `json:"sourceRoot"`
-	New          []scanner.FileMeta  `json:"new"`        // in Source, not in Base
-	Duplicates   int                 `json:"duplicates"` // in Source, already in Base (or repeated in Source)
-	BaseImages   int                 `json:"baseImages"`
-	SourceImages int                 `json:"sourceImages"`
-	Errors       []scanner.ScanError `json:"errors,omitempty"`
+	BaseRoot    string              `json:"baseRoot"`
+	SourceRoot  string              `json:"sourceRoot"`
+	New         []scanner.FileMeta  `json:"new"`        // in Source, not in Base
+	Duplicates  int                 `json:"duplicates"` // in Source, already in Base (or repeated in Source)
+	BaseFiles   int                 `json:"baseFiles"`
+	SourceFiles int                 `json:"sourceFiles"`
+	Errors      []scanner.ScanError `json:"errors,omitempty"`
+
+	// Kind records what was compared, so a caller can describe the result in
+	// the user's terms without having to remember what it asked for. Stats
+	// carries the same field after a scan, for the same reason.
+	Kind string `json:"kind,omitempty"`
 }
 
-// Merge scans the library and the source folder and works out which photos in
+// Merge scans the library and the source folder and works out which files in
 // the source are not already in the library — by exact content, and optionally
-// by visual similarity. It reads only; nothing is copied here.
+// by content similarity. It reads only; nothing is copied here.
+//
+// The low-confidence related tier is deliberately absent, and its absence is a
+// decision rather than an omission. Merge answers "do I already have this?",
+// and a guess based on nothing but a matching name and size answering *yes*
+// means a genuinely new document is never imported while the user is told the
+// import was complete. A wrong guess costs a file here; in a duplicate review
+// it only costs a second look.
 func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 	if opts.Threshold < 0 || opts.Threshold > 64 {
 		return nil, fmt.Errorf("threshold must be between 0 and 64, got %d", opts.Threshold)
+	}
+
+	extractor, err := resolveKind(opts.Kind)
+	if err != nil {
+		return nil, err
+	}
+	threshold := opts.Threshold
+	if opts.Similar && threshold <= 0 {
+		threshold = fingerprint.DefaultsFor(extractor.Kind()).Threshold
 	}
 
 	base, err := filepath.Abs(opts.Base)
@@ -60,7 +88,22 @@ func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 
 	// Index the library first, then walk the source. Both feed the same
 	// progress counters, so the UI shows steady movement across the whole job.
-	baseRes, err := scanner.Scan(ctx, scanner.Options{Root: base, DeepScan: opts.Similar, Progress: opts.Progress})
+	//
+	// Both scans get the same extractor, and that is the load-bearing part: the
+	// two sides are compared by Hamming distance, so a library fingerprinted as
+	// photos against a source fingerprinted as documents would produce distances
+	// that mean nothing at all.
+	scan := func(root string) (*scanner.Result, error) {
+		return scanner.Scan(ctx, scanner.Options{
+			Root:       root,
+			Extensions: opts.Extensions,
+			Extractor:  extractor,
+			DeepScan:   opts.Similar,
+			Progress:   opts.Progress,
+		})
+	}
+
+	baseRes, err := scan(base)
 	if err != nil {
 		return nil, err
 	}
@@ -70,7 +113,7 @@ func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 		// total is already known.
 		opts.Progress.WalkDone.Store(false)
 	}
-	srcRes, err := scanner.Scan(ctx, scanner.Options{Root: source, DeepScan: opts.Similar, Progress: opts.Progress})
+	srcRes, err := scan(source)
 	if err != nil {
 		return nil, err
 	}
@@ -87,11 +130,12 @@ func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 	}
 
 	analysis := &MergeAnalysis{
-		BaseRoot:     base,
-		SourceRoot:   source,
-		BaseImages:   len(baseRes.Files),
-		SourceImages: len(srcRes.Files),
-		Errors:       append(baseRes.Errors, srcRes.Errors...),
+		BaseRoot:    base,
+		SourceRoot:  source,
+		BaseFiles:   len(baseRes.Files),
+		SourceFiles: len(srcRes.Files),
+		Errors:      append(baseRes.Errors, srcRes.Errors...),
+		Kind:        string(extractor.Kind()),
 	}
 
 	// Track what we have already accepted as new, so two copies of the same
@@ -105,7 +149,7 @@ func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 			analysis.Duplicates++
 			continue
 		}
-		if opts.Similar && f.HasFingerprint && nearAny(f.Fingerprint, baseFingerprints, opts.Threshold) {
+		if opts.Similar && f.HasFingerprint && nearAny(f.Fingerprint, baseFingerprints, threshold) {
 			analysis.Duplicates++
 			continue
 		}
@@ -114,7 +158,7 @@ func Merge(ctx context.Context, opts MergeOptions) (*MergeAnalysis, error) {
 			analysis.Duplicates++
 			continue
 		}
-		if opts.Similar && f.HasFingerprint && nearAny(f.Fingerprint, acceptedFingerprints, opts.Threshold) {
+		if opts.Similar && f.HasFingerprint && nearAny(f.Fingerprint, acceptedFingerprints, threshold) {
 			analysis.Duplicates++
 			continue
 		}

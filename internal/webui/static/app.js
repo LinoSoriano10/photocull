@@ -33,6 +33,60 @@ function humanBytes(n) {
   return `${v.toFixed(1)} ${units[i]}`;
 }
 
+// ---- What is being deduplicated ----
+//
+// Photos and documents differ in wording, in how a card looks, and in how
+// strict "similar" should be, but in nothing else: the same scan, the same
+// groups, the same delete button. Everything that does differ is gathered here
+// rather than scattered as `kind === "docs"` tests through the file.
+
+const KINDS = {
+  photos: {
+    nouns: "photos",
+    tagline: "Find and remove duplicate photos — safely. Nothing is ever deleted permanently.",
+    similarHint: "Also resized, re-compressed or re-encoded copies (incl. HEIC). Review by eye.",
+    mergeTitle: "Add new photos to a library",
+    mergeHint: "Copy into a library only the photos from another folder that it doesn't already have.",
+    sourceTitle: "New photos to bring in",
+    // The photo threshold reaches as far as 16 because a re-encoded JPEG can
+    // sit that far from its original and still be the same picture.
+    slider: { min: 2, max: 16, value: 8 },
+    reviewHint:
+      "Each group below is one set of photos that look alike. Click any photo to " +
+      "compare it against the copy being kept — side by side, with a wipe, blinking " +
+      "between the two, or with the differences highlighted — then tick the ones to " +
+      "remove. Nothing is deleted until you press the button above, and even then it " +
+      "only goes to the recycle bin.",
+    mergeReviewHint:
+      "These photos are not in your library. Click any to see it full size, tick the " +
+      "ones to add, and press the button.",
+  },
+  docs: {
+    nouns: "documents",
+    tagline: "Find and remove duplicate documents — safely. Nothing is ever deleted permanently.",
+    similarHint: "Also drafts, re-saved copies and the same text exported to another format. Review by eye.",
+    mergeTitle: "Add new documents to a folder",
+    mergeHint: "Copy into a folder only the documents from elsewhere that it doesn't already have.",
+    sourceTitle: "New documents to bring in",
+    // Documents stop at 12: past that the distance is reaching the band where
+    // two unrelated files from one template look alike, and a wrong delete
+    // there costs a real document rather than one of several copies of a photo.
+    slider: { min: 2, max: 12, value: 6 },
+    reviewHint:
+      "Each group below is one set of documents that say much the same thing. The " +
+      "opening lines of each are shown so you can tell them apart; scroll a card to " +
+      "read further. Tick the ones to remove — nothing is deleted until you press the " +
+      "button above, and even then it only goes to the recycle bin.",
+    mergeReviewHint:
+      "These documents are not in the destination folder. Tick the ones to add and " +
+      "press the button.",
+  },
+};
+
+function kindInfo(kind) {
+  return KINDS[kind] || KINDS.photos;
+}
+
 // ---- Launcher ----
 
 const folderInput = document.getElementById("folder");
@@ -50,20 +104,57 @@ function selectedMode() {
   return document.querySelector('input[name="mode"]:checked').value;
 }
 
+function selectedKind() {
+  return document.querySelector('input[name="kind"]:checked').value;
+}
+
 // syncMode reshapes the launcher for the chosen mode: one folder for the two
 // duplicate-finding modes, two folders (library + source) for "add to library",
 // and a threshold slider whenever similarity matching is in play.
 function syncMode() {
   const mode = selectedMode();
   const merge = mode === "merge";
+  const k = kindInfo(selectedKind());
   thresholdRow.classList.toggle("hidden", mode === "exact");
   singleFolder.classList.toggle("hidden", merge);
   doubleFolder.classList.toggle("hidden", !merge);
-  startBtn.textContent = merge ? "Find new photos" : "Scan for duplicates";
+  startBtn.textContent = merge ? `Find new ${k.nouns}` : "Scan for duplicates";
+}
+
+// syncKind rewords the launcher and retunes the slider for the chosen kind.
+//
+// The slider is reset rather than kept, and that is on purpose: 8 is a sensible
+// photo threshold and a reckless document one, so carrying the number across
+// would silently apply the wrong policy to whichever kind was chosen second.
+function syncKind() {
+  const kind = selectedKind();
+  const k = kindInfo(kind);
+
+  document.getElementById("tagline").textContent = k.tagline;
+  document.getElementById("mode-similar-hint").textContent = k.similarHint;
+  document.getElementById("mode-merge-title").textContent = k.mergeTitle;
+  document.getElementById("mode-merge-hint").textContent = k.mergeHint;
+  document.getElementById("source-folder-title").textContent = k.sourceTitle;
+
+  thresholdInput.min = k.slider.min;
+  thresholdInput.max = k.slider.max;
+  thresholdInput.value = k.slider.value;
+  thresholdVal.textContent = thresholdInput.value;
+
+  // Documents open on "similar": two saves of one file are almost never
+  // byte-identical — the ZIP inside a .docx carries timestamps and revision
+  // ids — so exact-only would report nothing and look broken.
+  if (kind === "docs" && selectedMode() === "exact") {
+    document.querySelector('input[name="mode"][value="similar"]').checked = true;
+  }
+  syncMode();
 }
 
 document.querySelectorAll('input[name="mode"]').forEach((r) =>
   r.addEventListener("change", syncMode)
+);
+document.querySelectorAll('input[name="kind"]').forEach((r) =>
+  r.addEventListener("change", syncKind)
 );
 thresholdInput.addEventListener("input", () => {
   thresholdVal.textContent = thresholdInput.value;
@@ -132,6 +223,7 @@ async function startScan() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         path,
+        kind: selectedKind(),
         similar: selectedMode() === "similar",
         threshold: Number(thresholdInput.value),
       }),
@@ -157,8 +249,9 @@ function formatElapsed(sec) {
 }
 
 function renderProgress(st) {
+  const k = kindInfo(selectedKind());
   if (st.phase === "grouping") {
-    scanPhase.textContent = "Comparing photos…";
+    scanPhase.textContent = `Comparing ${k.nouns}…`;
   } else if (selectedMode() === "similar") {
     scanPhase.textContent = "Scanning & fingerprinting…";
   } else {
@@ -177,7 +270,7 @@ function renderProgress(st) {
   }
 
   const parts = [];
-  parts.push(`${st.discovered.toLocaleString()} images found`);
+  parts.push(`${st.discovered.toLocaleString()} files found`);
   parts.push(`${st.processed.toLocaleString()} scanned`);
   if (st.bytes > 0) parts.push(humanBytes(st.bytes));
   parts.push(formatElapsed(st.elapsedSec));
@@ -237,6 +330,12 @@ document.getElementById("back").addEventListener("click", () => {
 
 // ---- Review ----
 
+// reviewKind is what the loaded report is about, and it comes from the report
+// itself rather than from the radio button. `photocull serve D:\Docs --kind
+// docs` opens straight into this view without the launcher ever being shown,
+// so reading the radio would render a folder of documents as photographs.
+let reviewKind = "photos";
+
 function renderStats(s) {
   statsEl.innerHTML = "";
   const items = [
@@ -247,6 +346,16 @@ function renderStats(s) {
     [`${s.duplicateFiles}`, "duplicates"],
     [humanBytes(s.reclaimableBytes), "reclaimable"],
   ];
+
+  // The related tier gets its own tiles instead of being folded into the two
+  // above. Those figures are what photocull is sure of; these are what a person
+  // still has to check, and adding the second to the first would make the
+  // headline claim more than the tool actually knows.
+  if (s.relatedGroups > 0) {
+    items.push([`${s.relatedGroups}`, "to review"]);
+    items.push([humanBytes(s.relatedBytes), "if they match"]);
+  }
+
   for (const [value, label] of items) {
     const span = document.createElement("span");
     span.innerHTML = `<b>${value}</b> ${label}`;
@@ -256,7 +365,43 @@ function renderStats(s) {
 
 function updateToolbar() {
   deleteBtn.disabled = picked.size === 0;
+  deleteBtn.textContent = `Move ticked ${kindInfo(reviewKind).nouns} to recycle bin`;
   selectionCount.textContent = picked.size === 0 ? "" : `${picked.size} selected`;
+}
+
+// detailLine is the line under a card: what the file is, in the terms that
+// matter for the kind being reviewed.
+function detailLine(file, kind) {
+  if (kind === "docs") {
+    return `${humanBytes(file.size)} · ${file.decoded ? "text" : "no readable text"} · ${file.modTime}`;
+  }
+  const dims = file.decoded ? `${file.width}×${file.height}` : "unreadable";
+  return `${humanBytes(file.size)} · ${dims} · ${file.modTime}`;
+}
+
+// fillSnippet drops the opening lines of a document into its card.
+//
+// It is fetched per card rather than sent with the report because the report is
+// one JSON document covering every group, and a few hundred characters times a
+// few thousand files would make it enormous to build and slow to parse — for
+// text most of which is never scrolled to.
+async function fillSnippet(el, file, groupType) {
+  try {
+    const res = await fetch(`/api/snippet?path=${encodeURIComponent(file.path)}&n=1200`);
+    if (!res.ok) throw new Error(String(res.status));
+    const text = (await res.text()).trim();
+    if (!text) throw new Error("empty");
+    el.textContent = text;
+    return;
+  } catch {
+    // Not an error worth an error message: a .zip, a scanned PDF or a legacy
+    // .doc has nothing to show, and saying what photocull matched it on instead
+    // is the useful thing to put here.
+    el.textContent = groupType === "related"
+      ? "No readable text inside. These files were matched on their names and sizes alone — open them to check."
+      : "No readable text inside. These files were matched on their contents, byte for byte.";
+    el.classList.add("none");
+  }
 }
 
 function fileCard(file, group, index) {
@@ -265,6 +410,7 @@ function fileCard(file, group, index) {
   const thumbWrap = node.querySelector(".thumb-wrap");
   const checkbox = node.querySelector(".pick");
   const img = node.querySelector("img");
+  const snippet = node.querySelector(".snippet");
   const ord = node.querySelector(".ord");
   const badge = node.querySelector(".badge");
   const name = node.querySelector(".name");
@@ -272,32 +418,51 @@ function fileCard(file, group, index) {
 
   const isKeep = index === group.keepIndex;
   const groupType = group.type;
+  const isDoc = reviewKind === "docs";
 
   ord.textContent = `#${index + 1}`;
-  img.src = `/api/thumb?path=${encodeURIComponent(file.path)}`;
-  img.alt = file.relPath;
   name.textContent = file.relPath;
   name.title = file.path;
-  const dims = file.decoded ? `${file.width}×${file.height}` : "unreadable";
-  meta.textContent = `${humanBytes(file.size)} · ${dims} · ${file.modTime}`;
-  thumbWrap.title = isKeep
-    ? "Click to compare against the other copies"
-    : "Click to compare against the copy being kept";
+  meta.textContent = detailLine(file, reviewKind);
 
-  // Clicking the photo opens the comparison view against the copy being kept;
-  // it never toggles the delete checkbox, so looking closely can't accidentally
-  // select a file.
-  const open = () => openViewer(group.files, index, group.keepIndex);
-  thumbWrap.addEventListener("click", open);
-  thumbWrap.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
-  });
+  if (isDoc) {
+    // A document has nothing to look at, so the card shows what it says.
+    // Comparing two of them properly needs a word-level diff rather than a
+    // thumbnail, so the card is text to read, not a button to press.
+    fig.classList.add("doc");
+    img.classList.add("hidden");
+    node.querySelector(".zoom").classList.add("hidden");
+    snippet.classList.remove("hidden");
+    thumbWrap.removeAttribute("role");
+    thumbWrap.removeAttribute("tabindex");
+    thumbWrap.title = "";
+    snippet.textContent = "reading…";
+    fillSnippet(snippet, file, groupType);
+  } else {
+    img.src = `/api/thumb?path=${encodeURIComponent(file.path)}`;
+    img.alt = file.relPath;
+    thumbWrap.title = isKeep
+      ? "Click to compare against the other copies"
+      : "Click to compare against the copy being kept";
+
+    // Clicking the photo opens the comparison view against the copy being kept;
+    // it never toggles the delete checkbox, so looking closely can't
+    // accidentally select a file.
+    const open = () => openViewer(group.files, index, group.keepIndex);
+    thumbWrap.addEventListener("click", open);
+    thumbWrap.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+    });
+  }
 
   if (isKeep) {
     badge.textContent = "KEEP · suggested";
     badge.classList.add("keep");
   } else {
-    badge.textContent = "duplicate";
+    // A related group is a guess, so its members are not called duplicates.
+    // The badge is the one word most likely to be read, and calling a guess a
+    // duplicate is how somebody ticks all of them without looking.
+    badge.textContent = groupType === "related" ? "possible copy" : "duplicate";
   }
 
   // Exact duplicates are byte-identical, so pre-ticking the extra copies is
@@ -324,9 +489,33 @@ function fileCard(file, group, index) {
   return node;
 }
 
+// groupHint explains, per tier, what photocull knows and what it is asking of
+// the user. The three sentences differ in confidence, and that difference is
+// the whole point of having three tiers at all.
+function groupHint(type, kind) {
+  if (type === "exact") {
+    return "These files are byte-for-byte identical. The extra copies are pre-ticked; untick any you want to keep.";
+  }
+  if (type === "related") {
+    return "photocull could not read inside these files, so this is a guess from their names and sizes only — " +
+      "they may well be different things. Nothing is pre-ticked and nothing here is counted as reclaimable. " +
+      "Open them before deciding.";
+  }
+  return kind === "docs"
+    ? "These documents say much the same thing, but they are not identical — one may be a later draft. " +
+      "Read the snippets, then tick the ones to remove. None are pre-selected."
+    : "These photos only look alike. Click one to compare it against the copy being kept, then tick the ones " +
+      "to remove. None are pre-selected.";
+}
+
 function render(report) {
+  // Kind first: every helper below asks what is being reviewed.
+  reviewKind = report.stats.kind || "photos";
+  const k = kindInfo(reviewKind);
+
   rootEl.textContent = report.root;
   renderStats(report.stats);
+  document.getElementById("review-hint").textContent = k.reviewHint;
   groupsEl.innerHTML = "";
   picked.clear();
 
@@ -350,12 +539,11 @@ function render(report) {
     tag.textContent = group.type;
     head.appendChild(tag);
     const title = document.createElement("span");
-    title.textContent = `Group ${gi + 1} — ${group.files.length} photos`;
+    title.textContent = `Group ${gi + 1} — ${group.files.length} ${k.nouns}`;
     head.appendChild(title);
 
-    hint.textContent = group.type === "exact"
-      ? "These files are byte-for-byte identical. The extra copies are pre-ticked; untick any you want to keep."
-      : "These photos only look alike. Click one to compare it against the copy being kept, then tick the ones to remove. None are pre-selected.";
+    hint.textContent = groupHint(group.type, reviewKind);
+    filesEl.classList.toggle("docs", reviewKind === "docs");
 
     group.files.forEach((file, i) => {
       filesEl.appendChild(fileCard(file, group, i));
@@ -764,7 +952,13 @@ async function startMerge() {
     res = await fetch("/api/merge", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ base, source, similar: true, threshold: Number(thresholdInput.value) }),
+      body: JSON.stringify({
+        base,
+        source,
+        kind: selectedKind(),
+        similar: true,
+        threshold: Number(thresholdInput.value),
+      }),
     });
   } catch (err) {
     showLaunchError("Could not start: " + err);
@@ -791,7 +985,7 @@ async function pollMergeStatus() {
   // bar with live counts rather than a misleading percentage.
   progressBar.parentElement.classList.add("indeterminate");
   scanPhase.textContent = "Comparing with your library…";
-  const parts = [`${st.processed.toLocaleString()} photos checked`];
+  const parts = [`${st.processed.toLocaleString()} files checked`];
   if (st.bytes > 0) parts.push(humanBytes(st.bytes));
   parts.push(formatElapsed(st.elapsedSec));
   scanStats.textContent = parts.join(" · ");
@@ -811,8 +1005,13 @@ async function pollMergeStatus() {
   show("merge-review");
 }
 
+// mergeKind is what the last comparison was about, read from its result for the
+// same reason reviewKind is.
+let mergeKind = "photos";
+
 function updateMergeToolbar() {
   copyBtn.disabled = mergePicked.size === 0;
+  copyBtn.textContent = `Copy ticked ${kindInfo(mergeKind).nouns} into library`;
   mergeSelCount.textContent = mergePicked.size === 0 ? "" : `${mergePicked.size} selected`;
 }
 
@@ -822,25 +1021,40 @@ function mergeCard(file) {
   const thumbWrap = node.querySelector(".thumb-wrap");
   const checkbox = node.querySelector(".pick");
   const img = node.querySelector("img");
+  const snippet = node.querySelector(".snippet");
 
   node.querySelector(".ord").style.display = "none";
   node.querySelector(".badge").style.display = "none";
   node.querySelector(".del-text").textContent = "Copy to library";
 
-  img.src = `/api/thumb?path=${encodeURIComponent(file.path)}`;
-  img.alt = file.relPath;
   node.querySelector(".name").textContent = file.relPath;
   node.querySelector(".name").title = file.path;
-  const dims = file.decoded ? `${file.width}×${file.height}` : "unreadable";
-  node.querySelector(".meta").textContent = `${humanBytes(file.size)} · ${dims} · ${file.modTime}`;
+  node.querySelector(".meta").textContent = detailLine(file, mergeKind);
 
-  // Nothing to compare against here: these photos are the ones the library does
-  // not have, so there is no counterpart to put beside them.
-  const open = () => openSingle(file);
-  thumbWrap.addEventListener("click", open);
-  thumbWrap.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
-  });
+  if (mergeKind === "docs") {
+    fig.classList.add("doc");
+    img.classList.add("hidden");
+    node.querySelector(".zoom").classList.add("hidden");
+    snippet.classList.remove("hidden");
+    thumbWrap.removeAttribute("role");
+    thumbWrap.removeAttribute("tabindex");
+    thumbWrap.title = "";
+    snippet.textContent = "reading…";
+    // No group here, so nothing was matched: the fallback wording that fits is
+    // the content one.
+    fillSnippet(snippet, file, "exact");
+  } else {
+    img.src = `/api/thumb?path=${encodeURIComponent(file.path)}`;
+    img.alt = file.relPath;
+
+    // Nothing to compare against here: these photos are the ones the library
+    // does not have, so there is no counterpart to put beside them.
+    const open = () => openSingle(file);
+    thumbWrap.addEventListener("click", open);
+    thumbWrap.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+    });
+  }
 
   checkbox.checked = true;
   mergePicked.add(file.path);
@@ -856,15 +1070,19 @@ function mergeCard(file) {
 
 function renderMerge(result) {
   mergePicked.clear();
+  mergeKind = result.kind || "photos";
+  const k = kindInfo(mergeKind);
+
   document.getElementById("import-subdir").textContent = result.importSubdir || "photocull_added";
+  document.getElementById("merge-hint").textContent = k.mergeReviewHint;
 
   const summary = document.getElementById("merge-summary");
   summary.innerHTML = "";
   const items = [
     [`${result.new.length}`, "new to add"],
     [`${result.duplicates}`, "already in library"],
-    [`${result.sourceImages}`, "in source"],
-    [`${result.baseImages}`, "in library"],
+    [`${result.sourceFiles}`, "in source"],
+    [`${result.baseFiles}`, "in library"],
   ];
   for (const [value, label] of items) {
     const span = document.createElement("span");
@@ -874,6 +1092,7 @@ function renderMerge(result) {
 
   const gallery = document.getElementById("merge-gallery");
   gallery.innerHTML = "";
+  gallery.classList.toggle("docs", mergeKind === "docs");
   if (!result.new.length) {
     const p = document.createElement("p");
     p.className = "empty";
@@ -918,7 +1137,7 @@ document.getElementById("merge-done-ok").addEventListener("click", () => { syncM
 // If the server was started with a folder already (photocull serve <dir>), jump
 // straight to the review. Otherwise show the launcher.
 (async function boot() {
-  syncMode();
+  syncKind();
   try {
     const res = await fetch("/api/report");
     const report = await res.json();

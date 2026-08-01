@@ -175,6 +175,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/browse", s.handleBrowse)
 	mux.HandleFunc("/api/thumb", s.handleThumb)
 	mux.HandleFunc("/api/preview", s.handlePreview)
+	mux.HandleFunc("/api/snippet", s.handleSnippet)
 	mux.HandleFunc("/api/compare", s.handleCompare)
 	mux.HandleFunc("/api/imagediff", s.handleImageDiff)
 	mux.HandleFunc("/api/delete", s.handleDelete)

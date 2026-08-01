@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -93,6 +94,68 @@ func TestMergeDeduplicatesWithinSource(t *testing.T) {
 	}
 	if len(res.New) != 1 {
 		t.Errorf("New = %d, want 1 (source-internal duplicate collapsed)", len(res.New))
+	}
+}
+
+// TestMergeInDocumentsModeReadsEveryFile is the merge half of the kind seam.
+// Before it, Merge called scanner.Scan with no extractor at all, so "add to
+// library" silently stayed on photographs however the request was phrased: a
+// folder of documents compared against a library came back with nothing in it
+// and no explanation.
+func TestMergeInDocumentsModeReadsEveryFile(t *testing.T) {
+	base := t.TempDir()
+	source := t.TempDir()
+	docs := filepath.Join("..", "..", "testdata", "docs", "text")
+
+	copyInto(t, filepath.Join(docs, "report.txt"), filepath.Join(base, "report.txt"))
+	// The same prose with a few words changed: different bytes, same meaning,
+	// so only a text fingerprint can tell it is already there.
+	copyInto(t, filepath.Join(docs, "report_edited.txt"), filepath.Join(source, "report_v2.txt"))
+	copyInto(t, filepath.Join(docs, "unrelated.txt"), filepath.Join(source, "planting.txt"))
+
+	res, err := Merge(context.Background(), MergeOptions{
+		Base: base, Source: source, Kind: "docs", Similar: true,
+	})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+
+	if res.Kind != "docs" {
+		t.Errorf("Kind = %q, want docs", res.Kind)
+	}
+	if res.BaseFiles != 1 || res.SourceFiles != 2 {
+		t.Errorf("counted %d base and %d source files, want 1 and 2", res.BaseFiles, res.SourceFiles)
+	}
+	if len(res.New) != 1 || filepath.Base(res.New[0].Path) != "planting.txt" {
+		t.Fatalf("New = %+v, want only planting.txt: the edited report is the "+
+			"document the library already has", res.New)
+	}
+}
+
+// TestMergeNeverGuessesFromNamesAlone protects the decision recorded on Merge
+// itself. The related tier exists for exactly the pair below, and it must not
+// reach here: a guess answering "you already have this" means a genuinely new
+// document is never imported while the user is told the import was complete.
+func TestMergeNeverGuessesFromNamesAlone(t *testing.T) {
+	base := t.TempDir()
+	source := t.TempDir()
+
+	// Two files nothing can read inside, with the same stem and near-identical
+	// sizes — the textbook related pair.
+	opaque := strings.Repeat("\x00\x01\x02\x03", 8192)
+	write(t, filepath.Join(base, "informe.bin"), opaque)
+	write(t, filepath.Join(source, "informe (1).bin"), opaque+"tail")
+
+	res, err := Merge(context.Background(), MergeOptions{
+		Base: base, Source: source, Kind: "docs", Similar: true,
+	})
+	if err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if len(res.New) != 1 {
+		t.Errorf("New = %+v, want the source file: it is not byte-identical to "+
+			"anything in the library, and a matching name is not evidence enough "+
+			"to drop a file the user would never see again", res.New)
 	}
 }
 

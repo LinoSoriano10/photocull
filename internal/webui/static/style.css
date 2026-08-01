@@ -79,6 +79,9 @@ main { padding: 20px 24px 80px; display: grid; gap: 24px; }
 }
 .group-head .tag.similar { color: #ffcc66; border-color: #4a4326; }
 .group-head .tag.exact { color: var(--keep); border-color: #234a33; }
+/* Deliberately the coolest, least urgent of the three: a related group is a
+   guess, and it should not look like a finding. */
+.group-head .tag.related { color: #9fb6ff; border-color: #2b3a63; }
 
 .group-hint { margin: 0 0 12px; font-size: 13px; }
 
@@ -87,6 +90,9 @@ main { padding: 20px 24px 80px; display: grid; gap: 24px; }
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 16px;
 }
+/* Text needs a longer line than a thumbnail does; at 240px a snippet breaks
+   every four or five words and stops reading like prose. */
+.files.docs { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); }
 
 figure.file { margin: 0; }
 
@@ -102,6 +108,25 @@ figure.file { margin: 0; }
 }
 .thumb-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .thumb-wrap:hover { border-color: var(--accent); }
+
+/* A document card puts the opening lines of the file where the thumbnail goes.
+   It scrolls rather than clipping, because the first paragraph of two drafts is
+   often word-for-word identical and the difference is a little further down. */
+.file.doc .thumb-wrap { aspect-ratio: 4 / 3; cursor: default; }
+.file.doc .thumb-wrap:hover { border-color: transparent; }
+.snippet {
+  margin: 0;
+  height: 100%;
+  overflow: auto;
+  padding: 26px 10px 10px;
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  cursor: text;
+}
+.snippet.none { color: var(--muted); font-style: italic; }
+.file.picked .snippet { opacity: 0.5; }
 .file.picked .thumb-wrap { border-color: var(--danger); }
 .file.picked img { opacity: 0.5; }
 .file.tocopy .thumb-wrap { border-color: var(--keep); }
@@ -180,6 +205,10 @@ figcaption { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
 .card h2 { font-size: 14px; margin: 22px 0 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.4px; }
 
 .modes { display: grid; gap: 10px; }
+/* Side by side rather than stacked, so the kind question does not read as three
+   more entries in the list of modes underneath it. */
+.modes.kinds { grid-template-columns: 1fr 1fr; }
+@media (max-width: 520px) { .modes.kinds { grid-template-columns: 1fr; } }
 .mode {
   display: flex;
   gap: 12px;

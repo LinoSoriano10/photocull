@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
-	"photocull/internal/dedupe"
+	"photocull/internal/doctext"
 	"photocull/internal/imageutil"
 	"photocull/internal/osdialog"
 	"photocull/internal/pipeline"
@@ -50,12 +53,21 @@ func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, payload)
 }
 
-// scanRequest is the body of POST /api/scan: the mode and folder chosen on the
-// launcher page.
+// scanRequest is the body of POST /api/scan: the kind, mode and folder chosen
+// on the launcher page.
 type scanRequest struct {
-	Path      string `json:"path"`
-	Similar   bool   `json:"similar"`
-	Threshold int    `json:"threshold"`
+	Path string `json:"path"`
+
+	// Kind is "photos" or "docs". Empty means photos — the page that shipped
+	// before documents existed sent no such field, and it must keep working.
+	Kind string `json:"kind"`
+
+	// Ext narrows the scan to these extensions. Empty means whatever the kind
+	// looks at, which for documents is deliberately *everything*.
+	Ext []string `json:"ext"`
+
+	Similar   bool `json:"similar"`
+	Threshold int  `json:"threshold"`
 }
 
 // handleScan starts a scan in the background and returns immediately, so a
@@ -76,10 +88,11 @@ func (s *Server) handleScan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "please choose a folder"})
 		return
 	}
+	// An unset threshold is left at zero rather than filled in here, so the
+	// pipeline resolves it from the kind. Photos and documents want different
+	// numbers, and deciding that in two places is how they come to disagree.
 	if !req.Similar {
 		req.Threshold = 0
-	} else if req.Threshold <= 0 {
-		req.Threshold = dedupe.DefaultThreshold
 	}
 
 	s.scanMu.Lock()
@@ -111,10 +124,12 @@ func (s *Server) runScanJob(ctx context.Context, job *scanJob, req scanRequest) 
 	defer job.cancel()
 
 	an, err := pipeline.Run(ctx, pipeline.Options{
-		Root:      req.Path,
-		Similar:   req.Similar,
-		Threshold: req.Threshold,
-		Progress:  job.progress,
+		Root:       req.Path,
+		Kind:       req.Kind,
+		Extensions: req.Ext,
+		Similar:    req.Similar,
+		Threshold:  req.Threshold,
+		Progress:   job.progress,
 	})
 
 	// Load the report first and mark the job done second. The page polls status
@@ -200,7 +215,7 @@ func (s *Server) handleScanCancel(w http.ResponseWriter, r *http.Request) {
 
 // handleBrowse opens the native folder picker and returns the chosen path.
 func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request) {
-	path, err := s.pickFolder("Choose the photo folder to scan")
+	path, err := s.pickFolder("Choose the folder to scan")
 	switch {
 	case errors.Is(err, osdialog.ErrCancelled):
 		writeJSON(w, http.StatusOK, map[string]string{"path": ""})
@@ -316,6 +331,81 @@ func (s *Server) serveImage(w http.ResponseWriter, raw string, size int) {
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Write(data)
+}
+
+// maxSnippet caps how much text one card may ask for. A card is a glance, not
+// a reader: past a few thousand characters the user is scrolling a document
+// inside a thumbnail, which is the wrong tool for that job.
+const maxSnippet = 4000
+
+// defaultSnippet is what a card gets when it does not ask for a length.
+const defaultSnippet = 400
+
+// handleSnippet serves the opening text of a scanned document, so a card can
+// show what is *in* the file rather than only its name.
+//
+// It is the documents answer to /api/thumb, and it goes through the same guard.
+// Unlike thumbnails it is not cached: ThumbCache exists because decoding and
+// resizing a JPEG is expensive, whereas this re-reads a few hundred characters
+// off a file the operating system almost certainly still has in its page cache.
+// Caching it would buy nothing and would have to be invalidated on delete.
+func (s *Server) handleSnippet(w http.ResponseWriter, r *http.Request) {
+	raw := r.URL.Query().Get("path")
+	if raw == "" {
+		http.Error(w, "missing path", http.StatusBadRequest)
+		return
+	}
+
+	abs, ok := s.resolveAllowed(raw)
+	if !ok {
+		// Same as the image endpoints: do not reveal whether the file exists.
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	n := defaultSnippet
+	if v, err := strconv.Atoi(r.URL.Query().Get("n")); err == nil && v > 0 {
+		n = min(v, maxSnippet)
+	}
+
+	text, err := readSnippet(abs, n)
+	if err != nil {
+		// A file photocull cannot read inside is an ordinary outcome in
+		// documents mode — a .zip, a scanned PDF, a legacy .doc — so this
+		// mirrors serveImage's 422 rather than pretending something broke. The
+		// page falls back to showing the file's details.
+		http.Error(w, "no text in this file", http.StatusUnprocessableEntity)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-store")
+	io.WriteString(w, text)
+}
+
+// readSnippet extracts a document's text and returns at most n runes of it.
+func readSnippet(path string, n int) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	out, err := doctext.Extract(f, path)
+	if err != nil {
+		return "", err
+	}
+	if !out.Usable {
+		return "", errors.New("webui: " + out.Reason)
+	}
+
+	// Cut on runes, not bytes: slicing UTF-8 by byte count lands mid-character
+	// and the browser renders a replacement glyph at the end of every snippet.
+	runes := []rune(out.Text)
+	if len(runes) > n {
+		return string(runes[:n]) + "…", nil
+	}
+	return string(runes), nil
 }
 
 // comparison answers "is there anything here worth looking at?" before the page
@@ -534,10 +624,15 @@ func (s *Server) forget(paths []string) {
 // --- Add to library (merge) ---
 
 type mergeRequest struct {
-	Base      string `json:"base"`
-	Source    string `json:"source"`
-	Similar   bool   `json:"similar"`
-	Threshold int    `json:"threshold"`
+	Base   string `json:"base"`
+	Source string `json:"source"`
+
+	// Kind and Ext mean the same here as on a scan; see scanRequest.
+	Kind string   `json:"kind"`
+	Ext  []string `json:"ext"`
+
+	Similar   bool `json:"similar"`
+	Threshold int  `json:"threshold"`
 }
 
 // handleMerge starts, in the background, the comparison of a source folder
@@ -559,8 +654,6 @@ func (s *Server) handleMerge(w http.ResponseWriter, r *http.Request) {
 	}
 	if !req.Similar {
 		req.Threshold = 0
-	} else if req.Threshold <= 0 {
-		req.Threshold = dedupe.DefaultThreshold
 	}
 
 	s.scanMu.Lock()
@@ -582,11 +675,13 @@ func (s *Server) runMergeJob(ctx context.Context, job *scanJob, req mergeRequest
 	defer job.cancel()
 
 	result, err := pipeline.Merge(ctx, pipeline.MergeOptions{
-		Base:      req.Base,
-		Source:    req.Source,
-		Similar:   req.Similar,
-		Threshold: req.Threshold,
-		Progress:  job.progress,
+		Base:       req.Base,
+		Source:     req.Source,
+		Kind:       req.Kind,
+		Extensions: req.Ext,
+		Similar:    req.Similar,
+		Threshold:  req.Threshold,
+		Progress:   job.progress,
 	})
 
 	if err != nil {
@@ -651,15 +746,19 @@ func (s *Server) handleMergeStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, status)
 }
 
-// mergeResultPayload is the list of new photos plus the counts around them.
+// mergeResultPayload is the list of new files plus the counts around them.
 type mergeResultPayload struct {
 	BaseRoot     string     `json:"baseRoot"`
 	SourceRoot   string     `json:"sourceRoot"`
 	New          []fileView `json:"new"`
 	Duplicates   int        `json:"duplicates"`
-	BaseImages   int        `json:"baseImages"`
-	SourceImages int        `json:"sourceImages"`
+	BaseFiles    int        `json:"baseFiles"`
+	SourceFiles  int        `json:"sourceFiles"`
 	ImportSubdir string     `json:"importSubdir"`
+
+	// Kind lets the page label the result in the user's terms — photos or
+	// documents — without having to remember what it asked for.
+	Kind string `json:"kind,omitempty"`
 }
 
 func (s *Server) handleMergeResult(w http.ResponseWriter, r *http.Request) {
@@ -695,9 +794,10 @@ func (s *Server) handleMergeResult(w http.ResponseWriter, r *http.Request) {
 		SourceRoot:   result.SourceRoot,
 		New:          newViews,
 		Duplicates:   result.Duplicates,
-		BaseImages:   result.BaseImages,
-		SourceImages: result.SourceImages,
+		BaseFiles:    result.BaseFiles,
+		SourceFiles:  result.SourceFiles,
 		ImportSubdir: pipeline.ImportSubdir,
+		Kind:         result.Kind,
 	})
 }
 

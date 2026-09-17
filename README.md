@@ -4,6 +4,8 @@ A fast, safe command-line tool for finding and removing duplicate **photos and d
 
 Written in Go. Ships as a single static binary with no runtime dependencies.
 
+> **Built with Claude Code.** I directed this project; I did not write the code by hand. The first person in this README is direction, not authorship — and I would rather say so than let the repository imply otherwise.
+
 ---
 
 ## Why this exists
